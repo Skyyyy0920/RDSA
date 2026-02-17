@@ -1,0 +1,50 @@
+[project]
+name = "rdsa"
+version = "0.1.0"
+description = "Resilient Distributed Safety Architecture for Vision-Language Models"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1.0",
+    "transformers>=4.40.0",
+    "peft>=0.10.0",
+    "accelerate>=0.28.0",
+    "deepspeed>=0.14.0",
+    "datasets>=2.18.0",
+    "hydra-core>=1.3.0",
+    "omegaconf>=2.3.0",
+    "wandb>=0.16.0",
+    "openai>=1.12.0",
+    "Pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "scikit-learn>=1.3.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "tqdm>=4.66.0",
+    "einops>=0.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-x -q --tb=short"
