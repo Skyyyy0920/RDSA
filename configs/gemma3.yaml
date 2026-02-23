@@ -1,0 +1,88 @@
+# RDSA Training Config — Gemma-3-12B-IT (Secondary Surrogate)
+#
+# NOTE: Gemma-3 uses alternating 5-layer local sliding window + 1-layer global
+# attention (idx%6==5 is global). Layer group boundaries include global layers.
+# Layer access path: model.language_model.layers[i]
+
+model:
+  name: "google/gemma-3-12b-it"
+  architecture: "gemma3"
+  hidden_dim: 3840
+  num_layers: 48
+  model_class: "Gemma3ForConditionalGeneration"
+  layer_access_path: "model.language_model.layers"
+  layer_groups:
+    - [12, 13, 14, 15, 16, 17]  # Mid-early (17 is global: 17%6==5)
+    - [24, 25, 26, 27, 28, 29]  # Mid-late  (29 is global: 29%6==5)
+    - [36, 37, 38, 39, 40, 41]  # Deep      (41 is global: 41%6==5)
+
+subspace:
+  d_safe: 24          # Smaller d_s for d=3840 (d_s/d ≈ 0.6%)
+  d_semantic: 256     # Semantic subspace dim
+  n_contrast_samples: 2000
+  n_semantic_samples: 5000
+
+training:
+  # LoRA
+  lora_rank: 16
+  lora_alpha: 32
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+  lora_dropout: 0.05
+
+  # Optimization
+  learning_rate: 1.0e-5   # Lower LR for 12B model
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  num_epochs: 3
+  per_device_batch_size: 2   # Smaller batch for 12B model
+  gradient_accumulation_steps: 4  # Compensate with more accumulation
+  max_grad_norm: 1.0
+  fp16: false
+  bf16: true           # Gemma-3 prefers bf16
+  gradient_checkpointing: true
+
+  # Loss weights
+  alpha_entangle: 0.1
+  alpha_consist: 0.05
+  alpha_lat_sub: 0.1
+
+  # Subspace-aware LAT
+  lat_perturbation_alpha: 0.1
+
+  # Data balance
+  harmful_benign_ratio: 1.0
+
+monitor:
+  threshold: 0.2
+  conservative_mode: true
+
+data:
+  harmful_dataset: "walledai/StrongReject"
+  benign_dataset: "HuggingFaceM4/VQAv2"
+  advbench_path: "data/advbench.csv"
+  contrast_safe_path: "data/safe_prompts.jsonl"
+  contrast_unsafe_path: "data/unsafe_prompts.jsonl"
+
+evaluation:
+  judge_model: "gpt-4o"
+  attacks:
+    - scia
+    - umk
+    - vajm
+    - figstep
+  benchmarks:
+    - vqav2
+    - mmbench
+    - mme
+    - orbench
+
+logging:
+  project: "rdsa"
+  entity: null
+  run_name: "gemma-3-12b-rdsa"
+  log_every_n_steps: 10
+
+output:
+  save_dir: "outputs/gemma-3-12b"
+  subspace_dir: "subspaces/gemma-3-12b"
+  save_every_n_epochs: 1

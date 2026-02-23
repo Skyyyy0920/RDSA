@@ -66,7 +66,7 @@ class SafetySubspaceIdentifier:
         model: nn.Module,
         config: RDSAConfig,
         device: torch.device | None = None,
-        layer_accessor: str = "model.model.layers",
+        layer_accessor: str = "model.language_model.layers",
     ) -> None:
         if device is None:
             device = torch.device("cpu")

@@ -25,18 +25,19 @@ class FakeTransformerLayer(nn.Module):
 
 
 class FakeModel(nn.Module):
-    """Minimal model with nested `model.model.layers` structure."""
+    """Minimal model with nested `model.language_model.layers` structure."""
 
     def __init__(self, num_layers: int = 4, d: int = 64) -> None:
         super().__init__()
         layers = nn.ModuleList([FakeTransformerLayer(d) for _ in range(num_layers)])
 
-        # Nest as model.model.layers to match VLM pattern
-        inner = nn.Module()
-        inner.layers = layers
-        outer = nn.Module()
-        outer.model = inner
-        self.model = outer
+        # Nest as model.language_model.layers to match VLM pattern
+        # (e.g. Qwen3VLForConditionalGeneration.model -> Qwen3VLModel.language_model -> layers)
+        language_model = nn.Module()
+        language_model.layers = layers
+        wrapper = nn.Module()
+        wrapper.language_model = language_model
+        self.model = wrapper
         self._num_layers = num_layers
 
     def forward(
@@ -46,9 +47,9 @@ class FakeModel(nn.Module):
         **kwargs,
     ) -> torch.Tensor:
         B, seq_len = input_ids.shape
-        d = self.model.model.layers[0].linear.weight.shape[0]
+        d = self.model.language_model.layers[0].linear.weight.shape[0]
         x = torch.randn(B, seq_len, d, device=input_ids.device)
-        for layer in self.model.model.layers:
+        for layer in self.model.language_model.layers:
             x = layer(x)[0]
         return x
 
@@ -86,7 +87,7 @@ class TestHookManager:
 
         # Check that no hooks remain on any layer
         for i in range(4):
-            layer = fake_model.model.model.layers[i]
+            layer = fake_model.model.language_model.layers[i]
             assert len(layer._forward_hooks) == 0
 
     def test_hooks_removed_on_exception(self, fake_model: FakeModel) -> None:
@@ -96,7 +97,7 @@ class TestHookManager:
                 raise RuntimeError("test error")
 
         for i in range(4):
-            layer = fake_model.model.model.layers[i]
+            layer = fake_model.model.language_model.layers[i]
             assert len(layer._forward_hooks) == 0
 
     def test_clear_frees_memory(self, fake_model: FakeModel) -> None:

@@ -36,7 +36,7 @@ class HookManager:
         model: nn.Module,
         layer_indices: list[int],
         extraction_point: str = "output",
-        layer_accessor: str = "model.model.layers",
+        layer_accessor: str = "model.language_model.layers",
     ) -> None:
         if extraction_point not in ("output", "input"):
             raise ValueError(
@@ -146,7 +146,7 @@ def extract_group_activations(
     attention_mask: torch.Tensor,
     pixel_values: torch.Tensor | None = None,
     aggregate: str = "last_token",
-    layer_accessor: str = "model.model.layers",
+    layer_accessor: str = "model.language_model.layers",
 ) -> dict[int, torch.Tensor]:
     """Extract and aggregate activations from the representative layer of each group.
 

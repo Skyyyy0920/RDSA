@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(ls:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m pip install:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python -m ruff check:*)",
+      "Bash(python3:*)",
+      "Bash(ruff check:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix ruff lint issues: B008, B905, B007\n\n- B008: Change torch.device default arguments to None with sentinel pattern:\n  - attacks/scia.py:55: device parameter\n  - attacks/umk.py:41: device parameter\n  - defense/monitor.py:51: device parameter\n  - subspace/identifier.py:68: device parameter\n  - training/trainer.py:66: device parameter\n\n- B905: Add strict=True to zip\\(\\) calls:\n  - training/losses.py:53\n  - training/losses.py:283\n  - training/trainer.py:378\n  - evaluation/judge.py:131\n\n- B007: Rename unused loop variable k to _k:\n  - defense/monitor.py:67: for _k, clf in self.safety_classifiers.items\\(\\)\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(cat:*)",
+      "Bash(python -c:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}

@@ -47,7 +47,7 @@ class SCIAAttack:
         self,
         surrogate_model: nn.Module,
         processor: Any,
-        architecture: str = "llava",
+        architecture: str = "qwen3vl",
         target_layers: list[int] | None = None,
         attack_lr: float = 1 / 255,
         attack_steps: int = 100,

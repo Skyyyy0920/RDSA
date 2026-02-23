@@ -5,13 +5,17 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ModelConfig:
-    name: str = "llava-hf/llava-v1.6-mistral-7b-hf"
-    architecture: str = "llava"
+    name: str = "Qwen/Qwen3-VL-8B-Instruct"
+    architecture: str = "qwen3vl"
     hidden_dim: int = 4096
     num_layers: int = 32
     layer_groups: list[list[int]] = field(
-        default_factory=lambda: [[10, 11, 12, 13, 14], [18, 19, 20, 21, 22], [26, 27, 28, 29, 30]]
+        default_factory=lambda: [[8, 9, 10, 11, 12], [16, 17, 18, 19, 20], [24, 25, 26, 27, 28]]
     )
+    # HuggingFace model class name (e.g. "Qwen3VLForConditionalGeneration")
+    model_class: str = "Qwen3VLForConditionalGeneration"
+    # Dotted path from model root to the transformer layer list
+    layer_access_path: str = "model.language_model.layers"
 
 
 @dataclass
@@ -40,7 +44,8 @@ class TrainingConfig:
     per_device_batch_size: int = 4
     gradient_accumulation_steps: int = 2
     max_grad_norm: float = 1.0
-    fp16: bool = True
+    fp16: bool = False
+    bf16: bool = True
     gradient_checkpointing: bool = True
 
     # RDSA loss weights

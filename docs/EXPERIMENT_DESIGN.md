@@ -21,15 +21,15 @@
 
 ### 2.1 模型选择
 
-#### 训练模型（应用RDSA防御的模型）
+#### Surrogate模型（白盒，LoRA训练）
 | 模型 | 参数量 | 选择理由 |
 |------|--------|---------|
-| LLaVA-v1.6-Mistral-7B | 7B | SCIA论文的主surrogate，直接对比 |
-| Qwen2.5-VL-7B-Instruct | 7B | SCIA论文的第二surrogate，架构不同 |
-| LLaMA-3.2-11B-Vision-Instruct | 11B | 验证对更大模型的适用性 |
+| Qwen3-VL-8B-Instruct | 8B | 主力surrogate，最新Qwen3架构，32层d=4096 |
+| Gemma-3-12B-IT | 12B | 次要surrogate，独特的local/global注意力交替架构，48层d=3840 |
+| LLaMA-3.2-11B-Vision-Instruct | 11B | 保留，验证跨架构泛化性 |
 
-#### 攻击评估目标模型
-- 开源：上述三个模型（互为攻击目标） + InstructBLIP-7B, MiniGPT4-7B
+#### Victim模型（黑盒评估）
+- 开源：Qwen3-VL-30B-A3B-Instruct（MoE, 激活3B）、Gemma-3-27B-IT（48层d=4608）、LLaMA-3.2-11B-Vision-Instruct、Qwen3-VL-8B-Instruct（cross-eval）
 - 闭源：GPT-4o, Gemini-2.5-Flash, Claude-Sonnet-4.5（仅用于Exp 1的扩展评估）
 
 ### 2.2 攻击方法覆盖
@@ -109,7 +109,7 @@
 ```
 
 **具体步骤**：
-1. 对每个训练时防御方法，在LLaVA-v1.6和Qwen2.5-VL上分别训练
+1. 对每个训练时防御方法，在Qwen3-VL-8B和Gemma-3-12B上分别训练
 2. 对每种攻击方法，生成对抗样本
 3. 在所有防御模型上评估ASR
 4. 使用GPT-4o作为judge（复用SCIA的judge prompt）
@@ -355,22 +355,30 @@ LAT perturbation α = 0.1  # 对抗扰动强度
 
 ### 4.4 层组划分方案
 
-LLaVA-v1.6 (32 layers):
-```
-g_1: Layers 10-14 (中层组-早)
-g_2: Layers 18-22 (中层组-晚)  
-g_3: Layers 26-30 (深层组)
-```
-
-Qwen2.5-VL (28 layers):
+Qwen3-VL-8B (32 layers, d=4096):
 ```
 g_1: Layers 8-12 (中层组-早)
-g_2: Layers 15-19 (中层组-晚)
-g_3: Layers 22-26 (深层组)
+g_2: Layers 16-20 (中层组-晚)
+g_3: Layers 24-28 (深层组)
+```
+
+Gemma-3-12B (48 layers, d=3840):
+```
+g_1: Layers 12-17 (中层组-早, 含global层17)
+g_2: Layers 24-29 (中层组-晚, 含global层29)
+g_3: Layers 36-41 (深层组, 含global层41)
+```
+注意：Gemma-3使用5层local滑动窗口+1层global交替排列（idx%6==5为global），层组边界需覆盖global层。
+
+LLaMA-3.2-11B (32 layers, d=4096):
+```
+g_1: Layers 8-12 (中层组-早)
+g_2: Layers 16-20 (中层组-晚)
+g_3: Layers 24-28 (深层组)
 ```
 
 选择依据：
-- 跳过浅层（L1-L8）：语义抽象不足，无法编码安全概念
+- 跳过浅层（L1-L7）：语义抽象不足，无法编码安全概念
 - SCIA论文Figure 3证实中层和深层的安全/迁移特征最显著
 - 层组之间留有间隔，避免梯度高度相关
 
@@ -380,10 +388,10 @@ g_3: Layers 22-26 (深层组)
 
 | 阶段 | 模型 | GPU | 预计时间 |
 |------|------|-----|---------|
-| 安全子空间识别 | LLaVA-v1.6 | 1×A100 80G | ~3h |
-| 安全子空间识别 | Qwen2.5-VL | 1×A100 80G | ~3h |
-| RDSA训练 | LLaVA-v1.6 | 2×A100 80G | ~8h |
-| RDSA训练 | Qwen2.5-VL | 2×A100 80G | ~8h |
+| 安全子空间识别 | Qwen3-VL-8B | 1×A100 80G | ~3h |
+| 安全子空间识别 | Gemma-3-12B | 1×A100 80G | ~4h |
+| RDSA训练 | Qwen3-VL-8B | 2×A100 80G | ~8h |
+| RDSA训练 | Gemma-3-12B | 2×A100 80G | ~12h |
 | RDSA训练 | LLaMA-3.2-11B | 4×A100 80G | ~12h |
 | SCIA攻击复现 | - | 1×A100 80G | ~50h |
 | 其他攻击方法 | - | 1×A100 80G | ~30h |
@@ -441,7 +449,7 @@ g_3: Layers 22-26 (深层组)
 
 ### Phase 1: 基础验证（2-3周）
 1. ✅ 安全子空间识别 + 纠缠度测量（验证技术可行性）
-2. ✅ 在LLaVA-v1.6上训练RDSA（单模型验证）
+2. ✅ 在Qwen3-VL-8B上训练RDSA（单模型验证）
 3. ✅ 用UMK和SCIA两种攻击做快速评估
 4. ✅ 能力保持快速检查（VQAv2）
 
@@ -452,7 +460,7 @@ g_3: Layers 22-26 (深层组)
 ### Phase 2: 完整实验（3-4周）
 5. 扩展到所有攻击方法（Exp 1）
 6. 消融实验（Exp 2）
-7. 扩展到Qwen2.5-VL和LLaMA-3.2
+7. 扩展到Gemma-3-12B和LLaMA-3.2
 8. 机制分析实验（Exp 3, 4）
 
 ### Phase 3: 深度分析（2-3周）

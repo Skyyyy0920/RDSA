@@ -48,12 +48,14 @@ class ActivationIntegrityMonitor:
         config: RDSAConfig,
         subspace_results: list[SubspaceResult],
         safety_classifiers: dict[int, nn.Linear] | None = None,
+        processor: Any | None = None,
         device: torch.device | None = None,
     ) -> None:
         if device is None:
             device = torch.device("cuda")
         self.model = model
         self.config = config
+        self.processor = processor
         self.device = device
         self.threshold = config.monitor.threshold
         self.conservative_mode = config.monitor.conservative_mode

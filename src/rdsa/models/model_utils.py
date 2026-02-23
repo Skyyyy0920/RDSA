@@ -1,7 +1,7 @@
 """Model loading, layer access helpers, and LoRA application.
 
-Handles architecture-specific layer access patterns for LLaVA, Qwen2.5-VL,
-and LLaMA-3.2-Vision. Phase 1 focuses on LLaVA support.
+Handles architecture-specific layer access patterns for Qwen3-VL, Gemma-3,
+and LLaMA-3.2-Vision.
 """
 
 from __future__ import annotations
@@ -16,21 +16,21 @@ from rdsa.config import ModelConfig, TrainingConfig
 
 # Maps architecture name -> dotted path to the transformer layer list.
 LAYER_ACCESSORS: dict[str, str] = {
-    "llava": "model.model.layers",
-    "qwen": "model.model.layers",
-    "llama_vision": "model.model.layers",
+    "qwen3vl": "model.language_model.layers",
+    "gemma3": "model.language_model.layers",
+    "llama_vision": "model.language_model.layers",
 }
 
 # Maps architecture name -> HuggingFace model class name.
 MODEL_CLASSES: dict[str, str] = {
-    "llava": "LlavaForConditionalGeneration",
-    "qwen": "Qwen2VLForConditionalGeneration",
+    "qwen3vl": "Qwen3VLForConditionalGeneration",
+    "gemma3": "Gemma3ForConditionalGeneration",
     "llama_vision": "MllamaForConditionalGeneration",
 }
 
 
 def _resolve_attr(obj: Any, dotted_path: str) -> Any:
-    """Resolve a dotted attribute path like ``'model.model.layers'``."""
+    """Resolve a dotted attribute path like ``'model.language_model.layers'``."""
     return reduce(getattr, dotted_path.split("."), obj)
 
 
@@ -38,7 +38,7 @@ def get_layer_accessor(architecture: str) -> str:
     """Return the dotted layer accessor path for a given architecture.
 
     Args:
-        architecture: One of ``"llava"``, ``"qwen"``, ``"llama_vision"``.
+        architecture: One of ``"qwen3vl"``, ``"gemma3"``, ``"llama_vision"``.
 
     Returns:
         Dotted path string for accessing transformer layers.
@@ -54,12 +54,12 @@ def get_layer_accessor(architecture: str) -> str:
     return LAYER_ACCESSORS[architecture]
 
 
-def get_layers(model: nn.Module, architecture: str = "llava") -> nn.ModuleList:
+def get_layers(model: nn.Module, architecture: str = "qwen3vl") -> nn.ModuleList:
     """Return the full ModuleList of transformer layers.
 
     Args:
         model: The loaded VLM.
-        architecture: One of ``"llava"``, ``"qwen"``, ``"llama_vision"``.
+        architecture: One of ``"qwen3vl"``, ``"gemma3"``, ``"llama_vision"``.
 
     Returns:
         The ``nn.ModuleList`` containing all transformer layers.
@@ -71,14 +71,14 @@ def get_layers(model: nn.Module, architecture: str = "llava") -> nn.ModuleList:
 def get_layer(
     model: nn.Module,
     layer_idx: int,
-    architecture: str = "llava",
+    architecture: str = "qwen3vl",
 ) -> nn.Module:
     """Access a specific transformer layer by index.
 
     Args:
         model: The loaded VLM.
         layer_idx: Zero-indexed layer number.
-        architecture: One of ``"llava"``, ``"qwen"``, ``"llama_vision"``.
+        architecture: One of ``"qwen3vl"``, ``"gemma3"``, ``"llama_vision"``.
 
     Returns:
         The transformer layer module at the given index.
@@ -123,7 +123,7 @@ def load_model_and_processor(
         device: Target device. If ``None``, uses ``"auto"`` device map.
         load_in_8bit: Load model in 8-bit quantization.
         load_in_4bit: Load model in 4-bit quantization.
-        torch_dtype: Data type for model weights. Defaults to ``torch.float16``.
+        torch_dtype: Data type for model weights. Defaults to ``torch.bfloat16``.
 
     Returns:
         ``(model, processor)`` tuple.
@@ -131,10 +131,10 @@ def load_model_and_processor(
     from transformers import AutoProcessor
 
     if torch_dtype is None:
-        torch_dtype = torch.float16
+        torch_dtype = torch.bfloat16
 
     load_kwargs: dict[str, Any] = {
-        "torch_dtype": torch_dtype,
+        "dtype": torch_dtype,
         "low_cpu_mem_usage": True,
     }
 
@@ -154,16 +154,18 @@ def load_model_and_processor(
 
     architecture = config.architecture
 
-    if architecture == "llava":
-        from transformers import LlavaForConditionalGeneration
+    if architecture == "qwen3vl":
+        from transformers import Qwen3VLForConditionalGeneration
 
-        model = LlavaForConditionalGeneration.from_pretrained(
+        model = Qwen3VLForConditionalGeneration.from_pretrained(
             config.name, **load_kwargs
         )
-    elif architecture == "qwen":
-        from transformers import AutoModelForCausalLM
+    elif architecture == "gemma3":
+        from transformers import Gemma3ForConditionalGeneration
 
-        model = AutoModelForCausalLM.from_pretrained(config.name, **load_kwargs)
+        model = Gemma3ForConditionalGeneration.from_pretrained(
+            config.name, **load_kwargs
+        )
     elif architecture == "llama_vision":
         from transformers import MllamaForConditionalGeneration
 
