@@ -41,6 +41,7 @@ MODEL_CONFIGS: dict[str, dict[str, object]] = {
             [16, 17, 18, 19, 20],
             [24, 25, 26, 27, 28],
         ],
+        "subspace_dir": "subspaces/qwen3-vl-8b",
     },
     "gemma3": {
         "name": "google/gemma-3-12b-it",
@@ -52,6 +53,7 @@ MODEL_CONFIGS: dict[str, dict[str, object]] = {
             [24, 25, 26, 27, 28, 29],
             [36, 37, 38, 39, 40, 41],
         ],
+        "subspace_dir": "subspaces/gemma-3-12b",
     },
     "llama": {
         "name": "meta-llama/Llama-3.2-11B-Vision-Instruct",
@@ -63,6 +65,7 @@ MODEL_CONFIGS: dict[str, dict[str, object]] = {
             [16, 17, 18, 19, 20],
             [24, 25, 26, 27, 28],
         ],
+        "subspace_dir": "subspaces/llama-3.2-11b",
     },
 }
 
@@ -179,9 +182,16 @@ def main() -> None:
     config = RDSAConfig(model=model_cfg, subspace=subspace_cfg)
 
     # Determine output directory
-    output_dir = Path(args.output)
-    if not str(output_dir).endswith(model_cfg.architecture):
-        output_dir = output_dir / model_cfg.architecture
+    if args.config is not None and hasattr(cfg, "output") and hasattr(cfg.output, "subspace_dir"):
+        # Use subspace_dir from YAML config
+        output_dir = Path(cfg.output.subspace_dir)
+    elif args.output != "subspaces/" or args.config is not None:
+        # User explicitly specified --output, use as-is
+        output_dir = Path(args.output)
+    else:
+        # Default: use model-specific subspace_dir from MODEL_CONFIGS
+        model_dict = MODEL_CONFIGS[args.model]
+        output_dir = Path(str(model_dict["subspace_dir"]))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load model

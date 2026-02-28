@@ -4,7 +4,6 @@ These tests verify attack mechanics with synthetic data — they do NOT
 require a real VLM or GPU.
 """
 
-import pytest
 import torch
 
 

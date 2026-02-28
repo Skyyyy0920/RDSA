@@ -39,8 +39,8 @@ class TrainingConfig:
     # Optimization
     learning_rate: float = 2e-5
     weight_decay: float = 0.01
-    warmup_ratio: float = 0.1
-    num_epochs: int = 3
+    warmup_ratio: float = 0.03
+    num_epochs: int = 5
     per_device_batch_size: int = 4
     gradient_accumulation_steps: int = 2
     max_grad_norm: float = 1.0
@@ -48,13 +48,15 @@ class TrainingConfig:
     bf16: bool = True
     gradient_checkpointing: bool = True
 
-    # RDSA loss weights
-    alpha_entangle: float = 0.1
+    # SA-AT loss weight
+    alpha_sa_at: float = 0.3
+    # Cross-layer consistency weight
     alpha_consist: float = 0.05
-    alpha_lat_sub: float = 0.1
 
-    # Subspace-aware LAT
-    lat_perturbation_alpha: float = 0.1
+    # SA-AT hyperparameters
+    sa_at_pgd_steps: int = 7
+    sa_at_pgd_alpha: float = 0.1
+    sa_at_epsilon: float = 1.0
 
     # Data
     harmful_benign_ratio: float = 1.0

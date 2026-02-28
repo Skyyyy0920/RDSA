@@ -9,7 +9,7 @@
 |------|-------------|---------|---------|
 | RQ1 | RDSA能否有效防御多种类型的攻击？ | Exp 1: 主实验 | 普适性 |
 | RQ2 | 各模块的贡献如何？ | Exp 2: 消融实验 | 必要性 |
-| RQ3 | 安全-语义纠缠是否真的提升了攻击难度？ | Exp 3: 纠缠度分析 | 机制验证 |
+| RQ3 | SA-AT子空间对抗训练是否有效加固安全子空间？ | Exp 3: SA-AT分析 | 机制验证 |
 | RQ4 | 多层冗余是否有效增加攻击代价？ | Exp 4: 冗余分析 | 机制验证 |
 | RQ5 | RDSA是否保持模型正常能力？ | Exp 5: 能力保持 | 实用性 |
 | RQ6 | RDSA能否抵抗自适应攻击？ | Exp 6: 自适应攻击 | 鲁棒性上界 |
@@ -76,7 +76,7 @@
 | **VQA Acc** | VQAv2准确率 | ↑ 保持 |
 | **MMB Score** | MMBench得分 | ↑ 保持 |
 | **MME Score** | MME感知+认知得分 | ↑ 保持 |
-| **η (Entanglement Degree)** | 安全-语义纠缠度 | ↑ 训练目标 |
+| **η (Entanglement Degree)** | 安全-语义纠缠度（监测指标） | ↑ 观察 |
 | **LCIV (Layer Consistency)** | 跨层安全一致性方差 | ↓ 训练目标 |
 
 ### 2.5 Baseline防御方法
@@ -127,15 +127,20 @@
 **目标**：验证每个模块的贡献。
 
 **消融变体**：
-| 变体 | L_entangle | L_consist | L_LAT-sub | 推理时监测 |
-|------|-----------|-----------|-----------|-----------|
-| RDSA-Full | ✓ | ✓ | ✓ | ✓ |
-| w/o Entanglement | ✗ | ✓ | ✓ | ✓ |
-| w/o Consistency | ✓ | ✗ | ✓ | ✓ |
-| w/o SubLAT | ✓ | ✓ | ✗ | ✓ |
-| w/o Monitor | ✓ | ✓ | ✓ | ✗ |
-| Training-only | ✓ | ✓ | ✓ | ✗ |
-| Monitor-only | ✗ | ✗ | ✗ | ✓ |
+| 变体 | L_SA-AT | L_consist | 推理时监测 |
+|------|---------|-----------|-----------|
+| RDSA-Full | ✓ | ✓ | ✓ |
+| w/o SA-AT | ✗ | ✓ | ✓ |
+| w/o Consistency | ✓ | ✗ | ✓ |
+| w/o Monitor | ✓ | ✓ | ✗ |
+| SFT-only | ✗ | ✗ | ✗ |
+| Monitor-only | ✗ | ✗ | ✓ |
+| SA-AT-only | ✓ | ✗ | ✗ |
+
+**消融细节**：
+- **w/o SA-AT**: α_sa_at=0, 仅L_SFT + α_consist·L_consist → 验证SA-AT是否为核心贡献
+- **w/o Consistency**: α_consist=0, 仅L_SFT + α_sa_at·L_SA-AT → 验证跨层一致性作用
+- **SA-AT-only**: 仅L_SFT + α_sa_at·L_SA-AT, 无监测 → 训练时防御最小配置
 
 **评估**：在3种代表性攻击（SCIA-迁移, UMK-白盒, FigStep-手动）上评估ASR，同时记录VQA Acc和OR Rate。
 
@@ -143,29 +148,37 @@
 
 ---
 
-### Exp 3: 纠缠度分析 (RQ3)
+### Exp 3: SA-AT子空间对抗训练分析 (RQ3)
 
-**目标**：验证安全-语义纠缠确实提升了攻击难度。
+**目标**：验证SA-AT确实加固了安全子空间，提升了安全子空间内的鲁棒性。
 
-**实验3a：纠缠度测量**
+**实验3a：安全子空间内鲁棒性**
+- 在Vanilla模型和RDSA模型上，分别在V_s子空间内进行PGD攻击
+- 测量达到相同ASR所需的扰动范数 ‖δ‖
+- 绘制ε vs ASR曲线（V_s子空间内）
+- RDSA模型应在相同ε下有更低ASR
+
+**实验3b：PGD步数与收敛性**
+- 对比不同PGD步数 T ∈ {1, 3, 5, 7, 10, 15}
+- 验证T=7步足够收敛（内循环loss趋于稳定）
+- 展示更多步数的边际收益递减
+
+**实验3c：训练前后的纠缠度观察**
 - 在Vanilla模型和RDSA模型上，分别计算每一层的纠缠度η
 - 绘制layer-wise entanglement degree曲线
-- 对比训练前后的变化
+- 观察SA-AT训练是否间接影响η（side effect分析）
+- 注意：η不是直接训练目标，而是分析指标
 
-**实验3b：纠缠度与ASR的相关性**
-- 通过调节α_1（纠缠损失权重），训练5个不同纠缠度的模型
-- 在每个模型上评估SCIA的ASR
-- 绘制η vs ASR的散点图，验证负相关
-
-**实验3c：攻击者可操纵空间分析**
+**实验3d：攻击者可操纵空间分析**
 - 在每个模型上，计算安全子空间中与语义子空间正交的分量维度
-- 验证dim(V_s^⊥) = k_s × (1-η) 的理论预测
-- 展示RDSA确实缩小了攻击者的可操纵空间
+- dim(V_s^⊥) = k_s × (1-η) 的理论预测验证
+- 即使η不高，SA-AT也确保ε-ball内所有方向都被加固
 
 **结果呈现**：
-- Figure: 逐层纠缠度对比图
-- Figure: η vs ASR 散点图 + 拟合曲线
-- Table: 不同纠缠度下的可操纵空间维度
+- Figure: V_s子空间内ε vs ASR曲线对比
+- Figure: PGD步数收敛图
+- Figure: 逐层纠缠度对比图（训练前/后）
+- Table: SA-AT覆盖分析 — dₛ维子空间中被加固的方向数
 
 ---
 
@@ -212,8 +225,8 @@
 - LLaVA-Bench：开放式对话质量，检测是否影响了模型的表达能力
 
 **Safety-Utility Pareto Front**：
-- 调节RDSA的总安全正则化权重α ∈ {0.01, 0.05, 0.1, 0.2, 0.5, 1.0}
-- 对每个α，记录 (Avg ASR reduction, VQA Acc drop)
+- 调节RDSA的总安全正则化权重α_sa_at ∈ {0.05, 0.1, 0.2, 0.3, 0.5, 1.0}
+- 对每个α_sa_at，记录 (Avg ASR reduction, VQA Acc drop)
 - 绘制Pareto曲线
 - 同时在图上标注CB和LAT的数据点作为对比
 
@@ -230,19 +243,19 @@
 这是审稿人必然关注的实验，必须设计周全。
 
 **攻击者知识假设**：攻击者知道
-1. RDSA的完整训练流程
+1. RDSA的完整训练流程（SA-AT + consistency）
 2. 安全子空间V_s和语义子空间V_t的方向
 3. 层组划分方案G
 4. 推理时监测的阈值
 
 **自适应攻击设计**：
 
-**Adaptive-SCIA**：在SCIA基础上增加反纠缠目标
+**Adaptive-SCIA**：在SCIA基础上增加反SA-AT目标
 ```
-L_adaptive = L_SCIA + λ_anti · L_anti-entangle
+L_adaptive = L_SCIA + λ_anti · L_subspace_bypass
 ```
-其中L_anti-entangle尝试找到V_s中与V_t正交的方向并沿此方向优化。
-- 理论分析：当η→1时，V_s^⊥的维度→0，此攻击失效
+其中L_subspace_bypass尝试找到V_s加固ε-ball外的方向进行攻击。
+- 理论分析：SA-AT覆盖了ε-ball内所有方向，攻击者必须使用更大扰动
 
 **Adaptive-PGD**：在PGD攻击中加入多层绕过约束
 ```
@@ -250,7 +263,7 @@ L_adaptive = L_SCIA + λ_anti · L_anti-entangle
 s.t. ||δ||_∞ ≤ ε
 ```
 同时对所有层组优化，而非只针对单层。
-- 这正是我们定理1分析的情况，攻击代价随G增加
+- 这正是我们定理2分析的情况，攻击代价随G增加
 
 **Adaptive-Monitor-Evasion**：在优化中加入监测规避约束
 ```
@@ -277,9 +290,9 @@ L_evasion = L_attack + λ_evade · max(Var_k[σ(w_k^T V_s^(k)T h_k)] - τ, 0)
 |--------|---------|------|
 | d_s（安全子空间维度） | {8, 16, 32, 64, 128} | 防御粒度 vs 能力保持 |
 | G（层组数量） | {1, 2, 3, 4} | 冗余程度 |
-| α_1（纠缠损失权重） | {0.01, 0.05, 0.1, 0.5, 1.0} | 纠缠强度 |
-| α_2（一致性损失权重） | {0.01, 0.05, 0.1, 0.5, 1.0} | 一致性强度 |
-| α_3（SubLAT权重） | {0.01, 0.05, 0.1, 0.5} | 对抗训练强度 |
+| α_sa_at（SA-AT权重） | {0.05, 0.1, 0.2, 0.3, 0.5} | 对抗训练强度 |
+| α_consist（一致性损失权重） | {0.01, 0.05, 0.1, 0.5, 1.0} | 一致性强度 |
+| ε（SA-AT扰动范围） | {0.5, 1.0, 2.0, 4.0} | 加固半径 |
 | τ（监测阈值） | {0.1, 0.2, 0.3, 0.5} | 灵敏度 vs 误报 |
 
 **每次固定其他参数，变化一个参数**，报告ASR + VQA Acc双指标。
@@ -314,7 +327,7 @@ Step 4: 验证
   - 验证V_s和V_t的基本统计特性
 ```
 
-### 4.2 RDSA训练
+### 4.2 RDSA训练（SA-AT Pipeline）
 
 ```
 输入：预训练VLM M, 安全SFT数据, V_s, V_t
@@ -323,21 +336,32 @@ Step 4: 验证
 基座训练：标准Safety SFT / DPO（复用现有pipeline）
 
 RDSA微调（冻结大部分参数，只微调LoRA适配器）：
-  Epochs: 3
-  Batch size: 8 (with gradient accumulation)
-  Learning rate: 2e-5 (cosine schedule)
-  LoRA rank: 16
-  LoRA alpha: 32
+  Epochs: 5
+  Batch size: 4 (with gradient accumulation 2)
+  Learning rate: 2e-5 (linear warmup + linear decay to 10%)
+  LoRA rank: 16, alpha: 32
   训练数据: StrongReject harmful + VQAv2 benign（保持1:1比例）
 
-  每个batch:
-    1. Forward pass → 收集各层hidden states
-    2. 计算L_SFT (标准SFT损失)
-    3. 计算L_entangle (纠缠损失)
-    4. 计算L_consist (跨层一致性损失)
-    5. 在安全子空间内施加随机扰动 → 计算L_LAT-sub
-    6. L_total = L_SFT + α_1·L_entangle + α_2·L_consist + α_3·L_LAT-sub
-    7. Backward + gradient step
+  每个batch (5-phase _train_step):
+    Phase 1: Clean forward (detach=False) → SFT loss + capture hidden states h_clean
+    Phase 2: PGD inner loop per group:
+      - h_detached = h_clean.detach()
+      - δ_0 = 0, for t=1..T:
+        - h_perturbed = h_detached + δ @ V_s.T
+        - InjectionHookManager replaces at rep layer
+        - loss = L_CE(model(**inputs), labels)
+        - grad = autograd.grad(loss, δ)  (no model gradients)
+        - δ += α · sign(grad); clamp to [-ε, ε]
+      - δ* = δ_T.detach()
+    Phase 3: Outer SA-AT loss:
+      - AdditiveInjectionHookManager adds V_s @ δ* to natural hidden states
+      - L_SA-AT = L_CE(model(**inputs), labels)
+    Phase 4: Consistency loss:
+      - Aggregate h_clean to last-token → {group_idx: [B, d]}
+      - L_consist = pairwise cosine distance
+    Phase 5: Combined backward:
+      - L_total = L_SFT + α_sa_at · L_SA-AT + α_consist · L_consist
+      - scaler.scale(L_total / grad_accum_steps).backward()
 ```
 
 ### 4.3 默认超参数设置
@@ -346,11 +370,10 @@ RDSA微调（冻结大部分参数，只微调LoRA适配器）：
 d_s = 32          # 安全子空间维度 (d_s/d ≈ 0.8%)
 d_t = 256         # 语义子空间维度
 G = 3             # 层组数量
-α_1 = 0.1         # 纠缠损失权重
-α_2 = 0.05        # 一致性损失权重
-α_3 = 0.1         # SubLAT权重
+α_sa_at = 0.3     # SA-AT权重
+α_consist = 0.05  # 一致性损失权重
 τ = 0.2           # 监测阈值
-LAT perturbation α = 0.1  # 对抗扰动强度
+SA-AT PGD: steps=7, alpha=0.1, epsilon=1.0
 ```
 
 ### 4.4 层组划分方案
@@ -390,13 +413,15 @@ g_3: Layers 24-28 (深层组)
 |------|------|-----|---------|
 | 安全子空间识别 | Qwen3-VL-8B | 1×A100 80G | ~3h |
 | 安全子空间识别 | Gemma-3-12B | 1×A100 80G | ~4h |
-| RDSA训练 | Qwen3-VL-8B | 2×A100 80G | ~8h |
-| RDSA训练 | Gemma-3-12B | 2×A100 80G | ~12h |
-| RDSA训练 | LLaMA-3.2-11B | 4×A100 80G | ~12h |
+| RDSA训练(SA-AT) | Qwen3-VL-8B | 2×A100 80G | ~12h |
+| RDSA训练(SA-AT) | Gemma-3-12B | 2×A100 80G | ~16h |
+| RDSA训练(SA-AT) | LLaMA-3.2-11B | 4×A100 80G | ~16h |
 | SCIA攻击复现 | - | 1×A100 80G | ~50h |
 | 其他攻击方法 | - | 1×A100 80G | ~30h |
 | 全量评估 | All models | 2×A100 80G | ~40h |
-| **总计** | | | **~160h GPU时间** |
+| **总计** | | | **~170h GPU时间** |
+
+注意：SA-AT训练比纯SFT慢约2-3x，因为每步需要PGD内循环（T=7步额外forward pass per group）。
 
 ---
 
@@ -405,8 +430,8 @@ g_3: Layers 24-28 (深层组)
 | 论文章节 | 实验内容 | 图表 |
 |---------|---------|------|
 | §1 Introduction | 动机图 + SCIA的key finding回顾 | Figure 1 |
-| §3 Methodology | 方法示意图 | Figure 2 |
-| §4.1 安全子空间验证 | 纠缠度可视化 | Figure 3 |
+| §3 Methodology | 方法示意图（SA-AT + Cross-Layer Redundancy） | Figure 2 |
+| §4.1 安全子空间验证 | SA-AT鲁棒性可视化 | Figure 3 |
 | §4.2 主实验 | Exp 1完整对比 | Table 1 (核心) |
 | §4.3 消融实验 | Exp 2 | Table 2 |
 | §4.4 机制分析 | Exp 3 + Exp 4 | Figure 4-6 |
@@ -426,7 +451,7 @@ g_3: Layers 24-28 (深层组)
 - 对迁移攻击 (SCIA, FORCE, UltraBreak)：ASR从40-60%降至10-20%
 - 对手动攻击 (FigStep, MM-SafetyBench)：ASR从20-40%降至5-15%
 - 对比CB：ASR降低相当但OR-Rate显著更低（CB约38% vs RDSA目标<10%）
-- 对比LAT：ASR更低（LAT不区分子空间，防御不够精准）
+- 对比LAT：ASR更低（LAT不区分子空间，防御不够精准；SA-AT在安全子空间内精确加固）
 
 **能力保持预期**：
 - VQA Acc下降 < 2%
@@ -437,10 +462,12 @@ g_3: Layers 24-28 (深层组)
 
 | 风险 | 可能性 | 缓解方案 |
 |------|--------|---------|
-| 纠缠训练导致能力下降超预期 | 中 | 减小α_1，增大d_s/d的比例实验 |
+| SA-AT训练导致能力下降超预期 | 中 | 减小α_sa_at或ε，缩小加固范围 |
 | 自适应攻击效果显著 | 中 | 这是诚实的贡献，讨论Defense的理论上界 |
-| SCIA复现困难（匿名论文） | 低 | 论文提供了完整算法，可按Algorithm 1实现 |
+| SCIA复现困难 | 低 | 论文提供了完整算法，可按Algorithm 1实现 |
 | 某些攻击类型防御效果差 | 低 | 分析失败模式，讨论局限性，诚实报告 |
+| PGD内循环收敛慢 | 低 | dₛ=32维空间很小，7步经验上足够；可增加到15步 |
+| SA-AT训练时间过长 | 中 | 减少PGD步数或仅加固部分层组 |
 | 跨层一致性监测误报率高 | 中 | 调节τ，绘制ROC曲线找最优工作点 |
 
 ---
@@ -448,14 +475,14 @@ g_3: Layers 24-28 (深层组)
 ## 八、实验执行优先级
 
 ### Phase 1: 基础验证（2-3周）
-1. ✅ 安全子空间识别 + 纠缠度测量（验证技术可行性）
-2. ✅ 在Qwen3-VL-8B上训练RDSA（单模型验证）
-3. ✅ 用UMK和SCIA两种攻击做快速评估
-4. ✅ 能力保持快速检查（VQAv2）
+1. 安全子空间识别 + 纠缠度测量（验证技术可行性）
+2. 在Qwen3-VL-8B上训练RDSA（SA-AT, 单模型验证）
+3. 用UMK和SCIA两种攻击做快速评估
+4. 能力保持快速检查（VQAv2）
 
 **Phase 1 Go/No-Go决策点**：
 - 如果ASR降低 > 10% 且 VQA Acc下降 < 5%，继续
-- 否则调整超参数或重新审视方法
+- 否则调整超参数（α_sa_at, ε, PGD steps）或重新审视方法
 
 ### Phase 2: 完整实验（3-4周）
 5. 扩展到所有攻击方法（Exp 1）

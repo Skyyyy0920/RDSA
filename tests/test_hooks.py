@@ -1,11 +1,14 @@
 """Tests for models/hooks.py — HookManager and activation extraction."""
 
+import pytest
 import torch
 import torch.nn as nn
-import pytest
 
-from rdsa.models.hooks import HookManager, get_representative_layer_indices
-
+from rdsa.models.hooks import (
+    HookManager,
+    InjectionHookManager,
+    get_representative_layer_indices,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal transformer-like model for testing hooks
@@ -82,7 +85,7 @@ class TestHookManager:
 
     def test_hooks_removed_after_exit(self, fake_model: FakeModel) -> None:
         """All hooks must be removed after exiting the context manager."""
-        with HookManager(fake_model, layer_indices=[0, 1, 2, 3]) as hm:
+        with HookManager(fake_model, layer_indices=[0, 1, 2, 3]):
             pass
 
         # Check that no hooks remain on any layer
@@ -93,7 +96,7 @@ class TestHookManager:
     def test_hooks_removed_on_exception(self, fake_model: FakeModel) -> None:
         """Hooks must be cleaned up even when an exception occurs."""
         with pytest.raises(RuntimeError):
-            with HookManager(fake_model, layer_indices=[0, 1]) as hm:
+            with HookManager(fake_model, layer_indices=[0, 1]):
                 raise RuntimeError("test error")
 
         for i in range(4):
@@ -131,6 +134,117 @@ class TestHookManager:
         """Should raise ValueError for invalid extraction_point."""
         with pytest.raises(ValueError, match="extraction_point"):
             HookManager(fake_model, layer_indices=[0], extraction_point="invalid")
+
+    def test_detach_true_no_grad(self, fake_model: FakeModel) -> None:
+        """Default detach=True should produce tensors without grad_fn."""
+        B, seq_len = 2, 5
+        input_ids = torch.zeros(B, seq_len, dtype=torch.long)
+        attn_mask = torch.ones(B, seq_len, dtype=torch.long)
+
+        with HookManager(fake_model, layer_indices=[0], detach=True) as hm:
+            fake_model(input_ids=input_ids, attention_mask=attn_mask)
+            acts = hm.get_activations()
+
+        assert acts[0].grad_fn is None
+
+    def test_detach_false_retains_grad(self, fake_model: FakeModel) -> None:
+        """detach=False should produce tensors that retain computation graph."""
+        B, seq_len = 2, 5
+        input_ids = torch.zeros(B, seq_len, dtype=torch.long)
+        attn_mask = torch.ones(B, seq_len, dtype=torch.long)
+
+        with HookManager(fake_model, layer_indices=[0], detach=False) as hm:
+            fake_model(input_ids=input_ids, attention_mask=attn_mask)
+            acts = hm.get_activations()
+
+        assert acts[0].grad_fn is not None
+
+    def test_detach_false_gradient_flows(self, fake_model: FakeModel) -> None:
+        """With detach=False, gradients should flow back to model params."""
+        B, seq_len = 2, 5
+        input_ids = torch.zeros(B, seq_len, dtype=torch.long)
+        attn_mask = torch.ones(B, seq_len, dtype=torch.long)
+
+        # Require gradients on layer 0 weights
+        layer0 = fake_model.model.language_model.layers[0]
+        layer0.linear.weight.requires_grad_(True)
+
+        with HookManager(fake_model, layer_indices=[0], detach=False) as hm:
+            fake_model(input_ids=input_ids, attention_mask=attn_mask)
+            acts = hm.get_activations()
+
+        loss = acts[0].sum()
+        loss.backward()
+
+        assert layer0.linear.weight.grad is not None
+        assert not torch.all(layer0.linear.weight.grad == 0)
+
+
+# ---------------------------------------------------------------------------
+# Tests: InjectionHookManager
+# ---------------------------------------------------------------------------
+
+
+class TestInjectionHookManager:
+    def test_injection_replaces_hidden_state(self, fake_model: FakeModel) -> None:
+        """Injected hidden states should replace the original layer output."""
+        B, seq_len, d = 2, 5, 64
+        input_ids = torch.zeros(B, seq_len, dtype=torch.long)
+        attn_mask = torch.ones(B, seq_len, dtype=torch.long)
+
+        # Create a specific tensor to inject
+        injected = torch.ones(B, seq_len, d) * 42.0
+
+        # Inject at layer 1, capture at layer 1 to verify
+        with InjectionHookManager(
+            fake_model, rep_layers=[1], injection_dict={0: injected},
+            layer_accessor="model.language_model.layers",
+        ):
+            with HookManager(
+                fake_model, layer_indices=[1], detach=True,
+                layer_accessor="model.language_model.layers",
+            ) as hm:
+                fake_model(input_ids=input_ids, attention_mask=attn_mask)
+                acts = hm.get_activations()
+
+        # The captured activation at layer 1 should be the injected tensor
+        torch.testing.assert_close(acts[1], injected, atol=1e-5, rtol=1e-4)
+
+    def test_hooks_cleaned_up(self, fake_model: FakeModel) -> None:
+        """InjectionHookManager should clean up hooks on exit."""
+        injected = torch.randn(1, 5, 64)
+
+        with InjectionHookManager(
+            fake_model, rep_layers=[0, 2],
+            injection_dict={0: injected, 1: injected},
+            layer_accessor="model.language_model.layers",
+        ):
+            pass
+
+        for i in range(4):
+            layer = fake_model.model.language_model.layers[i]
+            assert len(layer._forward_hooks) == 0
+
+    def test_injection_preserves_gradient(self, fake_model: FakeModel) -> None:
+        """When injected tensor has grad, gradients should flow through."""
+        B, seq_len, d = 2, 5, 64
+        input_ids = torch.zeros(B, seq_len, dtype=torch.long)
+        attn_mask = torch.ones(B, seq_len, dtype=torch.long)
+
+        injected = torch.randn(B, seq_len, d, requires_grad=True)
+
+        with InjectionHookManager(
+            fake_model, rep_layers=[1],
+            injection_dict={0: injected},
+            layer_accessor="model.language_model.layers",
+        ):
+            output = fake_model(input_ids=input_ids, attention_mask=attn_mask)
+
+        loss = output.sum()
+        loss.backward()
+
+        assert injected.grad is not None
+        assert not torch.all(injected.grad == 0)
 
 
 # ---------------------------------------------------------------------------

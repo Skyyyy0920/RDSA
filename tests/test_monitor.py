@@ -1,10 +1,8 @@
 """Tests for defense/monitor.py — ActivationIntegrityMonitor."""
 
-import pytest
 import torch
 import torch.nn as nn
 
-from rdsa.config import RDSAConfig
 from rdsa.subspace.identifier import SubspaceResult
 
 

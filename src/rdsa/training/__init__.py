@@ -2,16 +2,12 @@
 
 from rdsa.training.losses import (
     ConsistencyLoss,
-    EntanglementLoss,
-    RDSALoss,
-    SubspaceLATLoss,
+    SubspaceConstrainedATLoss,
 )
 from rdsa.training.trainer import RDSATrainer
 
 __all__ = [
     "ConsistencyLoss",
-    "EntanglementLoss",
-    "RDSALoss",
-    "SubspaceLATLoss",
+    "SubspaceConstrainedATLoss",
     "RDSATrainer",
 ]

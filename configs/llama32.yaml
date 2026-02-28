@@ -28,8 +28,8 @@ training:
   # Optimization
   learning_rate: 1.0e-5  # Lower LR for 11B model
   weight_decay: 0.01
-  warmup_ratio: 0.1
-  num_epochs: 3
+  warmup_ratio: 0.03
+  num_epochs: 5
   per_device_batch_size: 2  # Smaller batch for 11B model
   gradient_accumulation_steps: 4  # Compensate with more accumulation
   max_grad_norm: 1.0
@@ -37,13 +37,14 @@ training:
   bf16: true
   gradient_checkpointing: true
 
-  # Loss weights
-  alpha_entangle: 0.1
+  # SA-AT loss weights
+  alpha_sa_at: 0.3
   alpha_consist: 0.05
-  alpha_lat_sub: 0.1
 
-  # Subspace-aware LAT
-  lat_perturbation_alpha: 0.1
+  # SA-AT PGD parameters
+  sa_at_pgd_steps: 7
+  sa_at_pgd_alpha: 0.1
+  sa_at_epsilon: 1.0
 
   # Data balance
   harmful_benign_ratio: 1.0

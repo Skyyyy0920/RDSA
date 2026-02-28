@@ -1,9 +1,7 @@
 """Tests for subspace identification and metrics."""
 
 import tempfile
-from pathlib import Path
 
-import pytest
 import torch
 import torch.testing
 
@@ -14,7 +12,6 @@ from rdsa.subspace.metrics import (
     manipulable_dimensions,
     subspace_overlap,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -247,7 +244,7 @@ class TestSafetySubspaceIdentifier:
             loaded = SafetySubspaceIdentifier.load_subspaces(tmpdir)
 
         assert len(loaded) == 2
-        for orig, load in zip(results, loaded):
+        for orig, load in zip(results, loaded, strict=True):
             torch.testing.assert_close(orig.V_s, load.V_s)
             torch.testing.assert_close(orig.V_t, load.V_t)
             assert orig.layer_group_idx == load.layer_group_idx

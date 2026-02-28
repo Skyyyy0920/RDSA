@@ -2,7 +2,7 @@
 
 Usage:
     python -m rdsa.train --config configs/qwen3vl.yaml
-    python -m rdsa.train model.name=qwen3vl training.alpha_entangle=0.2
+    python -m rdsa.train training.alpha_sa_at=0.5
 
 Can also be run directly:
     python src/rdsa/train.py --config configs/qwen3vl.yaml
@@ -67,10 +67,11 @@ def _build_config(cfg: DictConfig) -> RDSAConfig:
         fp16=cfg.training.fp16,
         bf16=cfg.training.get("bf16", True),
         gradient_checkpointing=cfg.training.gradient_checkpointing,
-        alpha_entangle=cfg.training.alpha_entangle,
+        alpha_sa_at=cfg.training.alpha_sa_at,
         alpha_consist=cfg.training.alpha_consist,
-        alpha_lat_sub=cfg.training.alpha_lat_sub,
-        lat_perturbation_alpha=cfg.training.lat_perturbation_alpha,
+        sa_at_pgd_steps=cfg.training.sa_at_pgd_steps,
+        sa_at_pgd_alpha=cfg.training.sa_at_pgd_alpha,
+        sa_at_epsilon=cfg.training.sa_at_epsilon,
         harmful_benign_ratio=cfg.training.harmful_benign_ratio,
     )
     monitor_cfg = MonitorConfig(
@@ -94,7 +95,7 @@ def main(cfg: DictConfig) -> None:
     2. Load pre-identified subspaces (or identify them)
     3. Apply LoRA adapters
     4. Create data loaders
-    5. Train with multi-objective loss
+    5. Train with SA-AT + consistency loss
     """
     logger.info("RDSA Training Pipeline")
     logger.info("Config:\n%s", OmegaConf.to_yaml(cfg))
@@ -127,8 +128,25 @@ def main(cfg: DictConfig) -> None:
     logger.info("Applying LoRA adapters (rank=%d)", config.training.lora_rank)
     model = apply_lora(model, config.training)
 
+    # Cast LoRA parameters to fp32 for optimizer precision.
+    # Base model stays bf16 to save memory; only trainable LoRA weights
+    # are promoted so that AdamW doesn't lose precision in bf16.
+    n_cast = 0
+    for param in model.parameters():
+        if param.requires_grad:
+            param.data = param.data.float()
+            n_cast += 1
+    logger.info(
+        "Cast %d LoRA parameter tensors from bf16 to fp32 for optimizer precision",
+        n_cast,
+    )
+
     # 4. Create data loaders
-    from rdsa.training.data import ContrastDataset, create_train_dataloader
+    from rdsa.training.data import (
+        ContrastDataset,
+        create_contrast_dataloaders,
+        create_train_dataloader,
+    )
 
     # Load harmful/benign samples from JSONL files
     harmful_samples = ContrastDataset._load_jsonl(cfg.data.contrast_unsafe_path)
@@ -142,8 +160,28 @@ def main(cfg: DictConfig) -> None:
         ratio=config.training.harmful_benign_ratio,
     )
 
+    # Create contrast dataloaders for subspace re-identification between epochs
+    safe_dl, unsafe_dl = create_contrast_dataloaders(
+        safe_path=cfg.data.contrast_safe_path,
+        unsafe_path=cfg.data.contrast_unsafe_path,
+        processor=processor,
+        batch_size=config.training.per_device_batch_size,
+    )
+
     # 5. Train
+    from rdsa.subspace.identifier import SafetySubspaceIdentifier as _Identifier
     from rdsa.training.trainer import RDSATrainer
+
+    def re_identify(
+        current_model: torch.nn.Module, epoch: int
+    ) -> list:
+        """Re-identify V_s/V_t from the model's current activations."""
+        identifier = _Identifier(
+            current_model, config, device=device,
+            layer_accessor=config.model.layer_access_path,
+        )
+        # Use safe prompts as normal data for PCA (semantic subspace)
+        return identifier.identify_all_groups(safe_dl, unsafe_dl, safe_dl)
 
     trainer = RDSATrainer(
         model=model,
@@ -155,7 +193,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     logger.info("Starting training for %d epochs", config.training.num_epochs)
-    metrics = trainer.train()
+    metrics = trainer.train(re_identify_fn=re_identify)
 
     logger.info("Training complete. Final metrics:")
     for key, value in sorted(metrics.items()):

@@ -1,69 +1,17 @@
 """RDSA training loss functions.
 
-Implements the three RDSA-specific losses as nn.Module subclasses:
-- EntanglementLoss: Maximize safety-semantic subspace alignment
+Implements the RDSA-specific losses:
 - ConsistencyLoss: Enforce cross-layer safety assessment agreement
-- SubspaceLATLoss: Subspace-aware Latent Adversarial Training
-- RDSALoss: Composite loss combining all components
+- SubspaceConstrainedATLoss: PGD adversarial training within safety subspace
 
-CRITICAL: EntanglementLoss uses torch.max (differentiable), NOT argmax.
 CRITICAL: All subspace projections must be in fp32 even under AMP.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from rdsa.config import TrainingConfig
-from rdsa.subspace.metrics import entanglement_degree
-
-
-class EntanglementLoss(nn.Module):
-    """Maximize safety-semantic subspace alignment (Theorem 2).
-
-    .. math::
-        L_{entangle} = -\\frac{1}{|G|} \\sum_k \\frac{1}{d_s}
-            \\sum_i \\max_j |(v_s^{(k,i)})^T v_t^{(k,j)}|
-
-    Minimizing this loss maximizes the entanglement degree ``eta``.
-
-    CRITICAL: Uses ``torch.max`` (supports autograd) not ``argmax``.
-    """
-
-    def forward(
-        self,
-        V_s_list: list[torch.Tensor],
-        V_t_list: list[torch.Tensor],
-    ) -> torch.Tensor:
-        """Compute entanglement loss across all layer groups.
-
-        Args:
-            V_s_list: Safety subspace bases, one ``[d, d_s]`` per group.
-            V_t_list: Semantic subspace bases, one ``[d, d_t]`` per group.
-
-        Returns:
-            Scalar loss (negative entanglement, to be minimized).
-        """
-        group_etas = []
-
-        for V_s, V_t in zip(V_s_list, V_t_list, strict=True):
-            V_s = V_s.float()
-            V_t = V_t.float()
-
-            # Cross-correlation: [d_s, d_t]
-            cross = V_s.T @ V_t
-
-            # torch.max returns (values, indices) — .values is differentiable
-            max_alignments = torch.max(cross.abs(), dim=1).values  # [d_s]
-            group_etas.append(max_alignments.mean())
-
-        # Negative mean eta across groups
-        eta = torch.stack(group_etas).mean()
-        return -eta
 
 
 class ConsistencyLoss(nn.Module):
@@ -121,176 +69,154 @@ class ConsistencyLoss(nn.Module):
         return loss
 
 
-class SubspaceLATLoss(nn.Module):
-    """Subspace-aware Latent Adversarial Training.
+class SubspaceConstrainedATLoss(nn.Module):
+    """Subspace-Constrained PGD Adversarial Training Loss.
+
+    Core idea: find the strongest adversarial perturbation within the
+    safety subspace V_s via PGD, then train the model to still refuse
+    under that worst-case perturbation.
 
     .. math::
-        h_{adv} = h + V_s^{(k)} \\cdot \\epsilon,
-        \\quad \\epsilon \\sim \\text{Uniform}(-\\alpha, \\alpha)
+        \\delta^* = \\arg\\max_{\\|\\delta\\| \\leq \\varepsilon}
+            \\mathcal{L}_{CE}(f(h + V_s \\delta), y_{refusal})
 
-        L_{LAT-sub} = \\mathbb{E}_\\epsilon[L_{safety}(h_{adv})]
+        \\mathcal{L}_{SA\\text{-}AT} = \\mathcal{L}_{CE}(
+            f(h + V_s \\delta^*), y_{refusal})
 
-    Perturbs hidden states within the safety subspace and trains the model
-    to still produce safe outputs. This hardens the safety representations
-    against adversarial manipulation.
+    Key properties:
+
+    - Search space is only ``d_s`` dimensional (e.g. 32), so PGD
+      converges in a few steps.
+    - Inner PGD: ``h`` is **detached** — only ``delta`` receives gradients.
+    - Outer training: ``delta*`` is **detached** — gradients flow through
+      ``h`` to model parameters.
+    - Each layer group is perturbed independently in a single forward pass.
 
     Args:
-        perturbation_alpha: Magnitude of uniform perturbation.
-        num_perturbation_samples: Monte Carlo samples for the expectation.
+        pgd_steps: Number of PGD steps in the inner loop.
+        pgd_alpha: PGD step size.
+        epsilon: L-infinity norm bound on the perturbation in subspace.
     """
 
     def __init__(
         self,
-        perturbation_alpha: float = 0.1,
-        num_perturbation_samples: int = 1,
+        pgd_steps: int = 7,
+        pgd_alpha: float = 0.1,
+        epsilon: float = 1.0,
     ) -> None:
         super().__init__()
-        self.perturbation_alpha = perturbation_alpha
-        self.num_perturbation_samples = num_perturbation_samples
+        self.pgd_steps = pgd_steps
+        self.pgd_alpha = pgd_alpha
+        self.epsilon = epsilon
 
-    def _perturb_in_subspace(
+    def find_worst_perturbation(
         self,
-        h: torch.Tensor,
-        V_s: torch.Tensor,
-        alpha: float | None = None,
-    ) -> torch.Tensor:
-        """Apply random perturbation within the safety subspace.
-
-        Args:
-            h: Hidden states ``[B, d]``.
-            V_s: Safety subspace basis ``[d, d_s]``.
-            alpha: Perturbation magnitude. Uses ``self.perturbation_alpha``
-                if ``None``.
-
-        Returns:
-            Perturbed hidden states ``[B, d]``.
-        """
-        if alpha is None:
-            alpha = self.perturbation_alpha
-
-        V_s = V_s.float()
-        d_s = V_s.shape[1]
-
-        # epsilon ~ Uniform(-alpha, alpha), shape [B, d_s]
-        epsilon = (
-            torch.rand(h.shape[0], d_s, device=h.device, dtype=torch.float32)
-            * 2 * alpha
-            - alpha
-        )
-
-        # Perturbation in full space: V_s @ epsilon^T -> [d, B] -> transpose
-        perturbation = (V_s @ epsilon.T).T  # [B, d]
-
-        return h.float() + perturbation
-
-    def forward(
-        self,
-        hidden_states: dict[int, torch.Tensor],
+        model: nn.Module,
+        forward_kwargs: dict[str, torch.Tensor],
+        h_clean: dict[int, torch.Tensor],
         V_s_list: list[torch.Tensor],
-        safety_loss_fn: Callable[[dict[int, torch.Tensor]], torch.Tensor],
-    ) -> torch.Tensor:
-        """Compute subspace-aware LAT loss.
+        rep_layers: list[int],
+        layer_accessor: str,
+    ) -> dict[int, torch.Tensor]:
+        """PGD inner loop: find worst-case perturbation in V_s subspace.
 
-        For each Monte Carlo sample, perturbs hidden states within V_s for
-        each group, then evaluates the safety loss on perturbed states.
+        Searches for delta that maximizes CE loss (i.e. reduces the
+        model's ability to produce the correct refusal response).
 
         Args:
-            hidden_states: ``{group_idx: [B, d]}`` hidden states.
+            model: The VLM.
+            forward_kwargs: Standard model inputs (input_ids, attention_mask,
+                labels, optional pixel_values).
+            h_clean: ``{group_idx: [B, seq, d]}`` clean hidden states,
+                will be detached internally.
             V_s_list: Safety subspace bases, one ``[d, d_s]`` per group.
-            safety_loss_fn: Callable that takes perturbed hidden states dict
-                and returns a scalar safety loss.
+            rep_layers: Representative layer indices.
+            layer_accessor: Dotted path to transformer layers.
 
         Returns:
-            Scalar LAT loss averaged over groups and samples.
+            ``{group_idx: [B, seq, d_s]}`` optimal perturbation vectors.
         """
-        total_loss = torch.tensor(0.0, device=next(iter(hidden_states.values())).device)
+        from rdsa.models.hooks import InjectionHookManager
 
-        for _sample in range(self.num_perturbation_samples):
-            perturbed: dict[int, torch.Tensor] = {}
-            for group_idx in hidden_states:
-                h = hidden_states[group_idx]
-                V_s = V_s_list[group_idx]
-                perturbed[group_idx] = self._perturb_in_subspace(h, V_s)
+        h_detached = {gidx: h.detach() for gidx, h in h_clean.items()}
+        result: dict[int, torch.Tensor] = {}
 
-            total_loss = total_loss + safety_loss_fn(perturbed)
+        # Run PGD independently per group.  Each group's perturbation is
+        # found with a single-group injection hook, avoiding the problem
+        # of later injections severing earlier groups' computation graphs.
+        for gidx in sorted(h_clean.keys()):
+            V_s = V_s_list[gidx].float()  # [d, d_s]
+            h_det = h_detached[gidx]      # [B, seq, d]
+            d_s = V_s.shape[1]
 
-        return total_loss / self.num_perturbation_samples
+            delta = torch.zeros(
+                h_det.shape[0], h_det.shape[1], d_s,
+                device=h_det.device, dtype=torch.float32,
+            )
+            delta.requires_grad_(True)
 
+            for _step in range(self.pgd_steps):
+                # h_perturbed = h_detached + delta @ V_s.T
+                h_perturbed = h_det + delta @ V_s.T.unsqueeze(0)
 
-class RDSALoss(nn.Module):
-    """Composite RDSA loss combining SFT with all three RDSA losses.
+                with InjectionHookManager(
+                    model, rep_layers,
+                    {gidx: h_perturbed},
+                    layer_accessor,
+                ):
+                    output = model(**forward_kwargs)
 
-    .. math::
-        L_{total} = L_{SFT} + \\alpha_1 \\cdot L_{entangle}
-            + \\alpha_2 \\cdot L_{consist}
-            + \\alpha_3 \\cdot L_{LAT-sub}
+                # Maximize CE (gradient ascent on delta)
+                loss_inner = output.loss
+                (grad,) = torch.autograd.grad(
+                    loss_inner, delta, create_graph=False
+                )
 
-    Logs individual components for wandb tracking.
+                with torch.no_grad():
+                    delta.data += self.pgd_alpha * grad.sign()
+                    delta.data.clamp_(-self.epsilon, self.epsilon)
 
-    Args:
-        config: Training configuration with loss weights.
-    """
+            result[gidx] = delta.detach()
 
-    def __init__(self, config: TrainingConfig) -> None:
-        super().__init__()
-        self.alpha_entangle = config.alpha_entangle
-        self.alpha_consist = config.alpha_consist
-        self.alpha_lat_sub = config.alpha_lat_sub
+        return result
 
-        self.entanglement_loss = EntanglementLoss()
-        self.consistency_loss = ConsistencyLoss()
-        self.lat_loss = SubspaceLATLoss(
-            perturbation_alpha=config.lat_perturbation_alpha,
-        )
-
-    def forward(
+    def compute_outer_loss(
         self,
-        sft_loss: torch.Tensor,
-        hidden_states: dict[int, torch.Tensor],
+        model: nn.Module,
+        forward_kwargs: dict[str, torch.Tensor],
+        h_clean: dict[int, torch.Tensor],
+        delta_star: dict[int, torch.Tensor],
         V_s_list: list[torch.Tensor],
-        V_t_list: list[torch.Tensor],
-        safety_loss_fn: Callable[[dict[int, torch.Tensor]], torch.Tensor],
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        """Compute total RDSA loss and return individual components for logging.
+        rep_layers: list[int],
+        layer_accessor: str,
+    ) -> torch.Tensor:
+        """Outer training: compute refusal loss under worst-case perturbation.
+
+        ``h_clean`` retains computation graph so gradients flow to model
+        parameters.  ``delta_star`` is detached (constant).
 
         Args:
-            sft_loss: Standard SFT (cross-entropy) loss.
-            hidden_states: ``{group_idx: [B, d]}`` from representative layers.
+            model: The VLM.
+            forward_kwargs: Standard model inputs.
+            h_clean: ``{group_idx: [B, seq, d]}`` with live computation graph.
+            delta_star: ``{group_idx: [B, seq, d_s]}`` optimal perturbations
+                from PGD (detached).
             V_s_list: Safety subspace bases per group.
-            V_t_list: Semantic subspace bases per group.
-            safety_loss_fn: Callback for SubspaceLATLoss.
+            rep_layers: Representative layer indices.
+            layer_accessor: Dotted path to transformer layers.
 
         Returns:
-            ``(total_loss, loss_dict)`` where ``loss_dict`` contains:
-            ``{"loss/total", "loss/sft", "loss/entangle", "loss/consist",
-            "loss/lat_sub", "metric/eta"}``.
+            Scalar SA-AT loss (CE on perturbed hidden states).
         """
-        l_entangle = self.entanglement_loss(V_s_list, V_t_list)
-        l_consist = self.consistency_loss(hidden_states, V_s_list)
-        l_lat_sub = self.lat_loss(hidden_states, V_s_list, safety_loss_fn)
+        from rdsa.models.hooks import AdditiveInjectionHookManager
 
-        total = (
-            sft_loss
-            + self.alpha_entangle * l_entangle
-            + self.alpha_consist * l_consist
-            + self.alpha_lat_sub * l_lat_sub
-        )
+        # Use ADDITIVE hooks: add V_s @ delta_star to the natural layer
+        # output.  This preserves the computation graph through ALL layers
+        # so gradients flow to every LoRA parameter, even when multiple
+        # groups are perturbed simultaneously.
+        with AdditiveInjectionHookManager(
+            model, rep_layers, delta_star, V_s_list, layer_accessor
+        ):
+            output = model(**forward_kwargs)
 
-        # Compute eta for monitoring (detached — not part of loss graph)
-        with torch.no_grad():
-            etas = [
-                entanglement_degree(V_s.float(), V_t.float())
-                for V_s, V_t in zip(V_s_list, V_t_list, strict=True)
-            ]
-            mean_eta = torch.stack(etas).mean().item()
-
-        loss_dict = {
-            "loss/total": total.item(),
-            "loss/sft": sft_loss.item(),
-            "loss/entangle": l_entangle.item(),
-            "loss/consist": l_consist.item(),
-            "loss/lat_sub": l_lat_sub.item(),
-            "metric/eta": mean_eta,
-        }
-
-        return total, loss_dict
+        return output.loss

@@ -1,7 +1,7 @@
-"""Activation extraction hooks with safe context-managed lifecycle.
+"""Activation extraction and injection hooks with safe context-managed lifecycle.
 
 CRITICAL: Hook cleanup is essential. Leaked hooks cause silent memory leaks
-and wrong gradients. Always use HookManager as a context manager.
+and wrong gradients. Always use hook managers as context managers.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ class HookManager:
         layer_indices: Which layers to extract activations from.
         extraction_point: "output" to capture layer outputs, "input" for inputs.
         layer_accessor: Dotted path to the layers module list (e.g. "model.layers").
+        detach: If True, detach captured tensors from the computation graph.
     """
 
     def __init__(
@@ -37,6 +38,7 @@ class HookManager:
         layer_indices: list[int],
         extraction_point: str = "output",
         layer_accessor: str = "model.language_model.layers",
+        detach: bool = True,
     ) -> None:
         if extraction_point not in ("output", "input"):
             raise ValueError(
@@ -46,6 +48,7 @@ class HookManager:
         self._layer_indices = list(layer_indices)
         self._extraction_point = extraction_point
         self._layer_accessor = layer_accessor
+        self._detach = detach
         self._handles: list[torch.utils.hooks.RemovableHook] = []
         self._activations: dict[int, torch.Tensor] = {}
 
@@ -62,12 +65,12 @@ class HookManager:
         self._remove_hooks()
 
     def _get_layer(self, layer_idx: int) -> nn.Module:
-        """Retrieve a specific layer module by index."""
-        parts = self._layer_accessor.split(".")
-        module = self._model
-        for part in parts:
-            module = getattr(module, part)
-        return module[layer_idx]
+        """Retrieve a specific layer module by index.
+
+        Automatically unwraps PeftModel (LoRA) wrappers so that the
+        layer accessor path works regardless of whether LoRA is applied.
+        """
+        return _resolve_layer(self._model, layer_idx, self._layer_accessor)
 
     def _register_hooks(self) -> None:
         """Register forward hooks on all target layers."""
@@ -105,8 +108,14 @@ class HookManager:
                 tensor = output[0] if isinstance(output, tuple) else output
             else:
                 tensor = input[0] if isinstance(input, tuple) else input
-            # Detach to avoid retaining the computation graph
-            self._activations[layer_idx] = tensor.detach()
+            # When detach=True (default), disconnect from the computation graph
+            # to save memory.  When detach=False, keep the graph alive so that
+            # losses computed on captured activations can backpropagate through
+            # the model (required for consistency loss L_consist and SA-AT
+            # outer loop).
+            self._activations[layer_idx] = (
+                tensor.detach() if self._detach else tensor
+            )
 
         return hook_fn
 
@@ -122,6 +131,182 @@ class HookManager:
     def clear(self) -> None:
         """Free stored activations to release memory."""
         self._activations.clear()
+
+
+def _resolve_layer(
+    model: nn.Module, layer_idx: int, layer_accessor: str
+) -> nn.Module:
+    """Resolve a specific layer module, unwrapping peft if needed.
+
+    Args:
+        model: The model (possibly LoRA-wrapped).
+        layer_idx: Zero-indexed layer number.
+        layer_accessor: Dotted path to the layers module list.
+
+    Returns:
+        The transformer layer module at the given index.
+    """
+    module = model
+    if hasattr(module, "get_base_model"):
+        module = module.get_base_model()
+    for part in layer_accessor.split("."):
+        module = getattr(module, part)
+    return module[layer_idx]
+
+
+class InjectionHookManager:
+    """Injects replacement hidden states at specified layers via forward hooks.
+
+    Used by SA-AT for both the PGD inner loop (replace with
+    ``h_detached + perturbation``) and the outer training loop (replace
+    with ``h + perturbation`` where ``h`` retains the computation graph).
+
+    The hook replaces the first element of the layer output with the
+    pre-computed tensor, preserving any additional outputs (attention
+    weights, cache, etc.).
+
+    Usage::
+
+        with InjectionHookManager(model, rep_layers, perturbed_h, accessor):
+            output = model(**inputs)  # hidden states are replaced
+
+    Args:
+        model: The VLM (possibly LoRA-wrapped).
+        rep_layers: Representative layer indices, one per group.
+        injection_dict: ``{group_idx: tensor [B, seq, d]}`` — the hidden
+            states to inject at each representative layer.
+        layer_accessor: Dotted path to transformer layers.
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        rep_layers: list[int],
+        injection_dict: dict[int, torch.Tensor],
+        layer_accessor: str = "model.language_model.layers",
+    ) -> None:
+        self._model = model
+        self._rep_layers = rep_layers
+        self._injection_dict = injection_dict
+        self._layer_accessor = layer_accessor
+        self._handles: list[torch.utils.hooks.RemovableHook] = []
+
+    def __enter__(self) -> InjectionHookManager:
+        for group_idx, layer_idx in enumerate(self._rep_layers):
+            if group_idx not in self._injection_dict:
+                continue
+            layer = _resolve_layer(
+                self._model, layer_idx, self._layer_accessor
+            )
+            hook_fn = self._make_injection_hook(group_idx)
+            handle = layer.register_forward_hook(hook_fn)
+            self._handles.append(handle)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type | None,
+        exc_val: BaseException | None,
+        exc_tb: Any | None,
+    ) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+
+    def _make_injection_hook(self, group_idx: int) -> Callable:
+        """Create a hook that replaces hidden states with the injected tensor."""
+        h_inject = self._injection_dict[group_idx]
+
+        def hook_fn(
+            module: nn.Module,
+            input: torch.Tensor | tuple[torch.Tensor, ...],
+            output: torch.Tensor | tuple[torch.Tensor, ...],
+        ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+            if isinstance(output, tuple):
+                return (h_inject.to(output[0].dtype),) + output[1:]
+            return h_inject.to(output.dtype)
+
+        return hook_fn
+
+
+class AdditiveInjectionHookManager:
+    """Adds perturbations to hidden states at specified layers.
+
+    Unlike ``InjectionHookManager`` which **replaces** the hidden state,
+    this manager **adds** a perturbation to the natural layer output.
+    This preserves the full computation graph through the model, which
+    is required for the SA-AT outer training loop where gradients must
+    flow through all layers' LoRA parameters simultaneously.
+
+    Usage::
+
+        with AdditiveInjectionHookManager(model, rep_layers, deltas, V_s, accessor):
+            output = model(**inputs)  # h_out = h_natural + V_s @ delta
+
+    Args:
+        model: The VLM (possibly LoRA-wrapped).
+        rep_layers: Representative layer indices, one per group.
+        delta_dict: ``{group_idx: [B, seq, d_s]}`` perturbations in subspace.
+        V_s_list: Safety subspace bases, one ``[d, d_s]`` per group.
+        layer_accessor: Dotted path to transformer layers.
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        rep_layers: list[int],
+        delta_dict: dict[int, torch.Tensor],
+        V_s_list: list[torch.Tensor],
+        layer_accessor: str = "model.language_model.layers",
+    ) -> None:
+        self._model = model
+        self._rep_layers = rep_layers
+        self._delta_dict = delta_dict
+        self._V_s_list = V_s_list
+        self._layer_accessor = layer_accessor
+        self._handles: list[torch.utils.hooks.RemovableHook] = []
+
+    def __enter__(self) -> AdditiveInjectionHookManager:
+        for group_idx, layer_idx in enumerate(self._rep_layers):
+            if group_idx not in self._delta_dict:
+                continue
+            layer = _resolve_layer(
+                self._model, layer_idx, self._layer_accessor
+            )
+            hook_fn = self._make_additive_hook(group_idx)
+            handle = layer.register_forward_hook(hook_fn)
+            self._handles.append(handle)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type | None,
+        exc_val: BaseException | None,
+        exc_tb: Any | None,
+    ) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+
+    def _make_additive_hook(self, group_idx: int) -> Callable:
+        """Create a hook that ADDS V_s @ delta to the layer output."""
+        delta = self._delta_dict[group_idx]  # [B, seq, d_s]
+        V_s = self._V_s_list[group_idx].float()  # [d, d_s]
+
+        def hook_fn(
+            module: nn.Module,
+            input: torch.Tensor | tuple[torch.Tensor, ...],
+            output: torch.Tensor | tuple[torch.Tensor, ...],
+        ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+            h = output[0] if isinstance(output, tuple) else output
+            # Add perturbation: delta @ V_s.T → [B, seq, d]
+            perturbation = delta @ V_s.T.unsqueeze(0)
+            h_perturbed = h + perturbation.to(h.dtype)
+            if isinstance(output, tuple):
+                return (h_perturbed,) + output[1:]
+            return h_perturbed
+
+        return hook_fn
 
 
 def get_representative_layer_indices(layer_groups: list[list[int]]) -> list[int]:

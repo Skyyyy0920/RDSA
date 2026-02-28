@@ -20,7 +20,7 @@ Defense method against adversarial attacks on Vision-Language Models (VLMs). Tar
 - `python -m rdsa.evaluate --defense rdsa --attack scia --model qwen3vl` — Run evaluation
 - `python -m rdsa.evaluate --defense rdsa --attack all --model all` — Full evaluation matrix
 - `pytest tests/ -x -q` — Run tests (stop on first failure)
-- `pytest tests/test_losses.py -k "entanglement"` — Run specific test
+- `pytest tests/test_losses.py -k "sa_at"` — Run specific test
 - `python scripts/visualize_entanglement.py --model qwen3vl` — Generate η profile plots
 - `ruff check src/` — Lint
 - `ruff format src/` — Format
@@ -39,7 +39,7 @@ rdsa/
 │   ├── config.py               # RDSAConfig dataclass
 │   ├── models/
 │   │   ├── __init__.py
-│   │   ├── hooks.py            # Activation extraction hooks
+│   │   ├── hooks.py            # Activation extraction & injection hooks (SA-AT)
 │   │   └── model_utils.py      # Model loading, layer access helpers
 │   ├── subspace/
 │   │   ├── __init__.py
@@ -47,8 +47,8 @@ rdsa/
 │   │   └── metrics.py          # Entanglement degree η, LCIV computation
 │   ├── training/
 │   │   ├── __init__.py
-│   │   ├── losses.py           # EntanglementLoss, ConsistencyLoss, SubspaceLATLoss
-│   │   ├── trainer.py          # RDSATrainer (multi-objective training loop)
+│   │   ├── losses.py           # ConsistencyLoss, SubspaceConstrainedATLoss (SA-AT)
+│   │   ├── trainer.py          # RDSATrainer (SA-AT multi-objective training loop)
 │   │   └── data.py             # Dataset classes (safe/unsafe pairs, VQA)
 │   ├── defense/
 │   │   ├── __init__.py
@@ -83,30 +83,34 @@ rdsa/
 
 ### Two Defense Modules
 
-**Module 1 — Multi-Granularity Safety Encoding (Theorem 1)**
-Distribute safety representations across G layer groups. Attack cost scales from O(ε₁*) to O(√Σ(εₖ*)²).
+**Module 1 — Multi-Layer Subspace-Constrained Adversarial Training (Theorem 1)**
+SA-AT: PGD adversarial training within each layer group's safety subspace V_s. For each group, find worst-case perturbation δ* in the d_s-dimensional V_s subspace, then train the model to still refuse under that perturbation. Coverage: every safety-relevant direction within ε-ball is hardened.
 
-**Module 2 — Safety-Semantic Subspace Entanglement (Theorem 2)**
-Maximize entanglement degree η(Vₛ, Vₜ). When η→1, attacker cannot suppress safety without destroying semantics.
+**Module 2 — Cross-Layer Safety Redundancy (Theorem 2)**
+Distribute safety representations across G layer groups. Attack cost scales from O(ε₁*) to O(√Σ(εₖ*)²) when gradient directions are non-aligned across groups.
 
 ### Key Data Structures
 
 - `V_s`: Safety subspace basis, `torch.Tensor` shape `[d, d_s]`, d_s=32 by default
 - `V_t`: Semantic subspace basis, `torch.Tensor` shape `[d, d_t]`, d_t=256 by default
 - Layer groups (Qwen3-VL-8B): `[[8-12], [16-20], [24-28]]` — skip shallow layers, gap between groups
-- `η = (1/kₛ) Σᵢ maxⱼ |vₛ⁽ⁱ⁾ᵀ vₜ⁽ʲ⁾|` — entanglement degree, target η→1
+- `η = (1/kₛ) Σᵢ maxⱼ |vₛ⁽ⁱ⁾ᵀ vₜ⁽ʲ⁾|` — entanglement degree (monitored, not directly optimized)
 
 ### Training Pipeline (3 steps)
 
 1. **Identify** — SVD on activation differences (safe vs unsafe) → V_s per layer group; PCA on normal data → V_t
-2. **Entangle** — Fine-tune with LoRA. Total loss: `L_SFT + α₁·L_entangle + α₂·L_consist + α₃·L_LAT-sub`
+2. **Train (SA-AT)** — Fine-tune with LoRA. Total loss: `L_SFT + α_sa_at·L_SA-AT + α_consist·L_consist`
+   - SA-AT inner loop: PGD finds δ* = argmax_{‖δ‖≤ε} L_CE(f(h + V_s·δ), y_refusal) per group
+   - SA-AT outer loop: L_SA-AT = L_CE(f(h + V_s·δ*), y_refusal) — train to refuse under worst perturbation
+   - Consistency: enforce cross-layer agreement on safety assessments
 3. **Monitor** — Inference anomaly detection via cross-layer safety confidence variance
 
 ### Default Hyperparameters
 
 ```
-d_s=32, d_t=256, G=3, α₁=0.1, α₂=0.05, α₃=0.1, τ=0.2, LAT_α=0.1
-LoRA: rank=16, alpha=32, lr=2e-5, epochs=3
+d_s=32, d_t=256, G=3, α_sa_at=0.3, α_consist=0.05, τ=0.2
+SA-AT: pgd_steps=7, pgd_alpha=0.1, epsilon=1.0
+LoRA: rank=16, alpha=32, lr=2e-5, epochs=5
 ```
 
 ## Coding Conventions
@@ -118,14 +122,15 @@ LoRA: rank=16, alpha=32, lr=2e-5, epochs=3
 - Hook-based activation extraction: always register AND remove hooks in try/finally or context manager.
 - Loss functions inherit `nn.Module`. Training utilities are plain classes.
 - Tests use `pytest` with `torch.testing.assert_close` for numerical checks. Tolerance: `atol=1e-5, rtol=1e-4`.
-- Log all loss components to wandb every step: `{"loss/total": ..., "loss/entangle": ..., "loss/consist": ..., "loss/lat_sub": ..., "metric/eta": ...}`
-- Config override via CLI: `python -m rdsa.train model.name=qwen3vl training.alpha_entangle=0.2`
+- Log all loss components to wandb every step: `{"loss/total": ..., "loss/sft": ..., "loss/sa_at": ..., "loss/consist": ..., "metric/eta": ...}`
+- Config override via CLI: `python -m rdsa.train model.name=qwen3vl training.alpha_sa_at=0.3`
 
 ## Critical Implementation Notes
 
 - **Hook cleanup is critical.** Leaked hooks cause silent memory leaks and wrong gradients. Use `HookManager` context manager in `src/rdsa/models/hooks.py`.
 - **SVD numerical stability.** Use `torch.linalg.svd(full_matrices=False)`. For large N, compute on CPU then move result to GPU.
-- **Entanglement loss is non-differentiable** (contains `max`). Use `torch.max` which supports autograd, NOT `argmax`.
+- **SA-AT inner loop gradient routing.** Use `torch.autograd.grad(loss, delta)` in PGD inner loop — only delta receives gradients, not model parameters. Run PGD per-group independently to avoid graph severing.
+- **SA-AT outer loop uses additive hooks.** `AdditiveInjectionHookManager` adds `V_s @ delta*` to natural hidden states, preserving the full computation graph so gradients flow to ALL LoRA parameters.
 - **Mixed precision.** Safety subspace projections (`V_s`, `V_t`) must stay fp32 even under AMP. Cast hidden states before projection. Qwen3-VL and Gemma-3 prefer bf16 over fp16.
 - **Memory.** Collecting activations across 3 layer groups for 8B model needs ~6GB extra. Use gradient checkpointing + activation offloading for training. Gemma-3-12B needs smaller batch_size=2.
 - **Reproducibility.** Seed everything: `torch.manual_seed`, `numpy.random.seed`, `random.seed`. Log seed in wandb.
@@ -157,6 +162,6 @@ LLaMA-3.2-11B (32 layers, d=4096):
 
 ## Reference Files
 
-- `docs/MATH.md` — Full proofs of Theorem 1 (attack cost amplification) and Theorem 2 (attack infeasibility under entanglement)
-- `docs/EXPERIMENT_DESIGN.md` — 7 experiments (main comparison, ablation, entanglement analysis, redundancy analysis, capability preservation, adaptive attacks, parameter sensitivity)
+- `docs/MATH.md` — Full proofs of Theorem 1 (SA-AT coverage guarantee) and Theorem 2 (cross-layer redundancy attack cost amplification)
+- `docs/EXPERIMENT_DESIGN.md` — 7 experiments (main comparison, ablation, SA-AT analysis, redundancy analysis, capability preservation, adaptive attacks, parameter sensitivity)
 - SCIA paper: the attack we primarily defend against. Key figures: Fig 3 (layer-wise probing), Algorithm 1 (attack pipeline)

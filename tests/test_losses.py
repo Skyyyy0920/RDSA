@@ -1,15 +1,12 @@
 """Tests for RDSA training losses."""
 
-import pytest
 import torch
+import torch.nn as nn
 import torch.testing
 
-from rdsa.config import TrainingConfig
 from rdsa.training.losses import (
     ConsistencyLoss,
-    EntanglementLoss,
-    RDSALoss,
-    SubspaceLATLoss,
+    SubspaceConstrainedATLoss,
 )
 
 
@@ -19,69 +16,6 @@ def make_orthonormal(d: int, k: int, seed: int = 0) -> torch.Tensor:
     A = torch.randn(d, k)
     Q, _ = torch.linalg.qr(A)
     return Q[:, :k]
-
-
-# ---------------------------------------------------------------------------
-# Tests: EntanglementLoss
-# ---------------------------------------------------------------------------
-
-
-class TestEntanglementLoss:
-    def test_orthogonal_loss_near_zero(self) -> None:
-        """Orthogonal V_s and V_t should produce loss near 0 (since -eta ≈ 0)."""
-        d, d_s, d_t = 64, 8, 8
-        V_s = torch.zeros(d, d_s)
-        V_t = torch.zeros(d, d_t)
-        for i in range(d_s):
-            V_s[i, i] = 1.0
-        for i in range(d_t):
-            V_t[d_s + i, i] = 1.0
-
-        loss_fn = EntanglementLoss()
-        loss = loss_fn([V_s], [V_t])
-        torch.testing.assert_close(loss, torch.tensor(0.0), atol=1e-5, rtol=1e-4)
-
-    def test_aligned_loss_near_negative_one(self) -> None:
-        """When V_s ⊂ V_t, loss should be near -1."""
-        d, d_s, d_t = 64, 8, 32
-        V_t = make_orthonormal(d, d_t, seed=42)
-        V_s = V_t[:, :d_s]
-
-        loss_fn = EntanglementLoss()
-        loss = loss_fn([V_s], [V_t])
-        torch.testing.assert_close(loss, torch.tensor(-1.0), atol=1e-5, rtol=1e-4)
-
-    def test_gradient_flows(self) -> None:
-        """Gradient should flow through EntanglementLoss via torch.max."""
-        d, d_s, d_t = 64, 8, 32
-        V_s = make_orthonormal(d, d_s, seed=10).requires_grad_(True)
-        V_t = make_orthonormal(d, d_t, seed=20)
-
-        loss_fn = EntanglementLoss()
-        loss = loss_fn([V_s], [V_t])
-        loss.backward()
-
-        assert V_s.grad is not None
-        assert not torch.all(V_s.grad == 0)
-
-    def test_multiple_groups(self) -> None:
-        """Loss should average across multiple groups."""
-        d = 64
-        # Group 0: orthogonal (eta=0), Group 1: aligned (eta=1)
-        V_s_0 = torch.zeros(d, 8)
-        V_t_0 = torch.zeros(d, 8)
-        for i in range(8):
-            V_s_0[i, i] = 1.0
-            V_t_0[8 + i, i] = 1.0
-
-        V_t_1 = make_orthonormal(d, 32, seed=42)
-        V_s_1 = V_t_1[:, :8]
-
-        loss_fn = EntanglementLoss()
-        loss = loss_fn([V_s_0, V_s_1], [V_t_0, V_t_1])
-
-        # Average of 0 and -1 = -0.5
-        torch.testing.assert_close(loss, torch.tensor(-0.5), atol=1e-4, rtol=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -119,121 +53,241 @@ class TestConsistencyLoss:
 
 
 # ---------------------------------------------------------------------------
-# Tests: SubspaceLATLoss
+# Tests: SubspaceConstrainedATLoss
 # ---------------------------------------------------------------------------
 
 
-class TestSubspaceLATLoss:
-    def test_perturbation_shape(self) -> None:
-        """Perturbed hidden states should have same shape as input."""
-        d, d_s, B = 64, 8, 4
-        V_s = make_orthonormal(d, d_s, seed=42)
-        h = torch.randn(B, d)
+class FakeLayer(nn.Module):
+    """A fake transformer layer for testing."""
 
-        lat = SubspaceLATLoss(perturbation_alpha=0.1)
-        h_perturbed = lat._perturb_in_subspace(h, V_s)
+    def __init__(self, d: int) -> None:
+        super().__init__()
+        self.linear = nn.Linear(d, d, bias=False)
+        nn.init.eye_(self.linear.weight)
 
-        assert h_perturbed.shape == h.shape
-
-    def test_perturbation_in_subspace(self) -> None:
-        """Perturbation should lie within the V_s column space."""
-        d, d_s, B = 64, 8, 4
-        V_s = make_orthonormal(d, d_s, seed=42)
-        h = torch.randn(B, d)
-
-        lat = SubspaceLATLoss(perturbation_alpha=0.1)
-        h_perturbed = lat._perturb_in_subspace(h, V_s)
-
-        delta = h_perturbed - h.float()  # [B, d]
-
-        # Project delta onto V_s: should recover delta (since delta ∈ col(V_s))
-        delta_proj = delta @ V_s @ V_s.T  # [B, d]
-        torch.testing.assert_close(delta, delta_proj, atol=1e-5, rtol=1e-4)
-
-    def test_forward_returns_scalar(self) -> None:
-        """Forward should return a scalar loss."""
-        d, d_s, B = 64, 8, 4
-        V_s = make_orthonormal(d, d_s, seed=42)
-        hidden = {0: torch.randn(B, d)}
-
-        def dummy_safety_loss(states):
-            return states[0].sum()
-
-        lat = SubspaceLATLoss(perturbation_alpha=0.1)
-        loss = lat(hidden, [V_s], dummy_safety_loss)
-
-        assert loss.dim() == 0  # scalar
+    def forward(
+        self, x: torch.Tensor, **kwargs: object
+    ) -> tuple[torch.Tensor, ...]:
+        return (self.linear(x),)
 
 
-# ---------------------------------------------------------------------------
-# Tests: RDSALoss
-# ---------------------------------------------------------------------------
+class FakeModel(nn.Module):
+    """Minimal model that mimics VLM architecture for hook testing.
+
+    Has ``model.language_model.layers[i]`` path so hooks can attach.
+    """
+
+    def __init__(self, d: int, n_layers: int = 4, vocab_size: int = 32) -> None:
+        super().__init__()
+        # Build nested structure: model.language_model.layers
+        self.model = nn.Module()
+        self.model.language_model = nn.Module()
+        self.model.language_model.layers = nn.ModuleList(
+            [FakeLayer(d) for _ in range(n_layers)]
+        )
+        self.embed = nn.Embedding(vocab_size, d)
+        self.head = nn.Linear(d, vocab_size, bias=False)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        **kwargs: object,
+    ) -> "FakeOutput":
+        h = self.embed(input_ids)  # [B, seq, d]
+        for layer in self.model.language_model.layers:
+            h = layer(h)[0]
+        logits = self.head(h)  # [B, seq, vocab]
+
+        loss = None
+        if labels is not None:
+            loss = nn.functional.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                labels.view(-1),
+                ignore_index=-100,
+            )
+        return FakeOutput(loss=loss, logits=logits)
 
 
-class TestRDSALoss:
-    def test_weight_scaling(self) -> None:
-        """With alpha_1=1, alpha_2=0, alpha_3=0, total should be SFT + entangle."""
-        d, d_s, d_t, B = 64, 8, 32, 4
+class FakeOutput:
+    def __init__(self, loss: torch.Tensor | None, logits: torch.Tensor) -> None:
+        self.loss = loss
+        self.logits = logits
 
-        config = TrainingConfig()
-        config.alpha_entangle = 1.0
-        config.alpha_consist = 0.0
-        config.alpha_lat_sub = 0.0
 
-        V_t = make_orthonormal(d, d_t, seed=42)
-        V_s = V_t[:, :d_s]
-        hidden = {0: torch.randn(B, d)}
-
-        def dummy_safety(states):
-            return torch.tensor(0.0)
-
-        rdsa_loss = RDSALoss(config)
-        sft = torch.tensor(2.0)
-
-        total, loss_dict = rdsa_loss(sft, hidden, [V_s], [V_t], dummy_safety)
-
-        # entangle loss for aligned subspaces = -1
-        expected = 2.0 + 1.0 * (-1.0)  # = 1.0
-        torch.testing.assert_close(total, torch.tensor(expected), atol=1e-4, rtol=1e-4)
-
-    def test_loss_dict_keys(self) -> None:
-        """Loss dict should contain all required keys for wandb logging."""
-        d, d_s, d_t, B = 64, 8, 32, 4
-        config = TrainingConfig()
-
+class TestSubspaceConstrainedATLoss:
+    def _setup(self, d: int = 32, d_s: int = 8, B: int = 2, seq: int = 4) -> dict:
+        """Create test fixtures."""
+        torch.manual_seed(42)
+        model = FakeModel(d, n_layers=4, vocab_size=32)
         V_s = make_orthonormal(d, d_s, seed=10)
-        V_t = make_orthonormal(d, d_t, seed=20)
-        hidden = {0: torch.randn(B, d)}
+        rep_layers = [1, 2]  # two groups
+        V_s_list = [V_s, V_s]
 
-        def dummy_safety(states):
-            return torch.tensor(0.0)
+        input_ids = torch.randint(0, 32, (B, seq))
+        attention_mask = torch.ones(B, seq, dtype=torch.long)
+        labels = input_ids.clone()
 
-        rdsa_loss = RDSALoss(config)
-        _, loss_dict = rdsa_loss(torch.tensor(1.0), hidden, [V_s], [V_t], dummy_safety)
-
-        required_keys = {
-            "loss/total",
-            "loss/sft",
-            "loss/entangle",
-            "loss/consist",
-            "loss/lat_sub",
-            "metric/eta",
+        forward_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
         }
-        assert required_keys == set(loss_dict.keys())
 
-    def test_eta_in_range(self) -> None:
-        """Reported eta should be in [0, 1]."""
-        d, d_s, d_t, B = 64, 8, 32, 4
-        config = TrainingConfig()
+        # Get clean hidden states
+        from rdsa.models.hooks import HookManager
 
-        V_s = make_orthonormal(d, d_s, seed=10)
-        V_t = make_orthonormal(d, d_t, seed=20)
-        hidden = {0: torch.randn(B, d)}
+        with HookManager(
+            model, rep_layers,
+            layer_accessor="model.language_model.layers",
+            detach=False,
+        ) as hm:
+            model(**forward_kwargs)
+            raw = hm.get_activations()
 
-        def dummy_safety(states):
-            return torch.tensor(0.0)
+        h_clean = {i: raw[layer_idx] for i, layer_idx in enumerate(rep_layers)}
 
-        rdsa_loss = RDSALoss(config)
-        _, loss_dict = rdsa_loss(torch.tensor(1.0), hidden, [V_s], [V_t], dummy_safety)
+        return {
+            "model": model,
+            "V_s_list": V_s_list,
+            "rep_layers": rep_layers,
+            "forward_kwargs": forward_kwargs,
+            "h_clean": h_clean,
+            "d_s": d_s,
+        }
 
-        assert 0.0 <= loss_dict["metric/eta"] <= 1.0
+    def test_pgd_respects_epsilon_constraint(self) -> None:
+        """||delta*|| should be <= epsilon for each group."""
+        ctx = self._setup()
+        loss_fn = SubspaceConstrainedATLoss(
+            pgd_steps=5, pgd_alpha=0.1, epsilon=1.0
+        )
+
+        delta_star = loss_fn.find_worst_perturbation(
+            model=ctx["model"],
+            forward_kwargs=ctx["forward_kwargs"],
+            h_clean=ctx["h_clean"],
+            V_s_list=ctx["V_s_list"],
+            rep_layers=ctx["rep_layers"],
+            layer_accessor="model.language_model.layers",
+        )
+
+        for _gidx, delta in delta_star.items():
+            # L-inf bound
+            assert delta.abs().max().item() <= 1.0 + 1e-6
+
+    def test_pgd_finds_adversarial_direction(self) -> None:
+        """PGD should increase CE loss compared to zero perturbation."""
+        ctx = self._setup()
+        loss_fn = SubspaceConstrainedATLoss(
+            pgd_steps=10, pgd_alpha=0.2, epsilon=2.0
+        )
+
+        # Baseline: CE with no perturbation
+        with torch.no_grad():
+            output_clean = ctx["model"](**ctx["forward_kwargs"])
+            ce_clean = output_clean.loss.item()
+
+        # PGD should find perturbation that increases CE
+        delta_star = loss_fn.find_worst_perturbation(
+            model=ctx["model"],
+            forward_kwargs=ctx["forward_kwargs"],
+            h_clean=ctx["h_clean"],
+            V_s_list=ctx["V_s_list"],
+            rep_layers=ctx["rep_layers"],
+            layer_accessor="model.language_model.layers",
+        )
+
+        # Forward with adversarial perturbation
+        from rdsa.models.hooks import InjectionHookManager
+
+        perturbations: dict[int, torch.Tensor] = {}
+        for gidx, h in ctx["h_clean"].items():
+            V_s = ctx["V_s_list"][gidx].float()
+            perturbations[gidx] = h.detach() + delta_star[gidx] @ V_s.T.unsqueeze(0)
+
+        with torch.no_grad():
+            with InjectionHookManager(
+                ctx["model"], ctx["rep_layers"], perturbations,
+                "model.language_model.layers",
+            ):
+                output_adv = ctx["model"](**ctx["forward_kwargs"])
+                ce_adv = output_adv.loss.item()
+
+        # Adversarial CE should be >= clean CE (PGD maximizes CE)
+        assert ce_adv >= ce_clean - 0.1  # small tolerance for numerical noise
+
+    def test_perturbation_stays_in_subspace(self) -> None:
+        """V_s @ delta should lie within col(V_s)."""
+        ctx = self._setup()
+        loss_fn = SubspaceConstrainedATLoss(
+            pgd_steps=3, pgd_alpha=0.1, epsilon=1.0
+        )
+
+        delta_star = loss_fn.find_worst_perturbation(
+            model=ctx["model"],
+            forward_kwargs=ctx["forward_kwargs"],
+            h_clean=ctx["h_clean"],
+            V_s_list=ctx["V_s_list"],
+            rep_layers=ctx["rep_layers"],
+            layer_accessor="model.language_model.layers",
+        )
+
+        for gidx, delta in delta_star.items():
+            V_s = ctx["V_s_list"][gidx].float()  # [d, d_s]
+            # Perturbation in full space: delta @ V_s.T → [B, seq, d]
+            perturbation = delta @ V_s.T.unsqueeze(0)
+            # Project back onto V_s column space
+            proj = perturbation @ V_s @ V_s.T
+            # Should be unchanged (perturbation is already in col(V_s))
+            torch.testing.assert_close(perturbation, proj, atol=1e-5, rtol=1e-4)
+
+    def test_outer_loss_gradient_flows(self) -> None:
+        """Outer loss gradients should flow to model parameters (LoRA)."""
+        ctx = self._setup()
+        loss_fn = SubspaceConstrainedATLoss(
+            pgd_steps=3, pgd_alpha=0.1, epsilon=1.0
+        )
+
+        # Need fresh h_clean with graph
+        from rdsa.models.hooks import HookManager
+
+        ctx["model"].zero_grad()
+        with HookManager(
+            ctx["model"], ctx["rep_layers"],
+            layer_accessor="model.language_model.layers",
+            detach=False,
+        ) as hm:
+            ctx["model"](**ctx["forward_kwargs"])
+            raw = hm.get_activations()
+        h_clean = {i: raw[layer] for i, layer in enumerate(ctx["rep_layers"])}
+
+        delta_star = loss_fn.find_worst_perturbation(
+            model=ctx["model"],
+            forward_kwargs=ctx["forward_kwargs"],
+            h_clean=h_clean,
+            V_s_list=ctx["V_s_list"],
+            rep_layers=ctx["rep_layers"],
+            layer_accessor="model.language_model.layers",
+        )
+
+        loss = loss_fn.compute_outer_loss(
+            model=ctx["model"],
+            forward_kwargs=ctx["forward_kwargs"],
+            h_clean=h_clean,
+            delta_star=delta_star,
+            V_s_list=ctx["V_s_list"],
+            rep_layers=ctx["rep_layers"],
+            layer_accessor="model.language_model.layers",
+        )
+
+        loss.backward()
+
+        # At least some model parameters should have gradients
+        has_grad = False
+        for p in ctx["model"].parameters():
+            if p.grad is not None and p.grad.abs().max() > 0:
+                has_grad = True
+                break
+        assert has_grad, "No gradients flowed to model parameters"
