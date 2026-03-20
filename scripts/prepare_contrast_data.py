@@ -188,7 +188,13 @@ def load_unsafe_prompts(
     n: int = 2000,
     seed: int = 42,
 ) -> list[dict[str, str]]:
-    """Load unsafe prompts from AdvBench + StrongReject.
+    """Load unsafe prompts from multiple open-access sources.
+
+    Sources (tried in order, all non-gated):
+    1. AdvBench CSV (local)
+    2. PKU-Alignment/BeaverTails (HuggingFace, open)
+    3. LibrAI/do-not-answer (HuggingFace, open)
+    4. walledai/StrongReject (HuggingFace, may be gated)
 
     Args:
         advbench_path: Path to AdvBench CSV. None to skip.
@@ -201,29 +207,74 @@ def load_unsafe_prompts(
     rng = random.Random(seed)
     prompts: list[str] = []
 
-    # Load from AdvBench CSV
+    # Source 1: AdvBench CSV (skip header row if present)
     if advbench_path and Path(advbench_path).is_file():
         with open(advbench_path, encoding="utf-8") as f:
             reader = csv.reader(f)
-            for row in reader:
-                if row and row[0].strip():
-                    prompts.append(row[0].strip())
+            for i, row in enumerate(reader):
+                if not row or not row[0].strip():
+                    continue
+                text = row[0].strip()
+                # Skip header-like rows
+                if i == 0 and text.lower() in ("goal", "prompt", "instruction"):
+                    continue
+                prompts.append(text)
         logger.info("Loaded %d prompts from AdvBench", len(prompts))
 
-    # Try StrongReject from HuggingFace
-    try:
-        from datasets import load_dataset
-        logger.info("Loading unsafe prompts from walledai/StrongReject...")
-        ds = load_dataset("walledai/StrongReject", split="train")
-        for item in ds:
-            prompt = item.get("prompt", "") or item.get("forbidden_prompt", "")
-            if prompt and len(prompt) > 10:
-                prompts.append(prompt)
-            if len(prompts) >= n * 2:
-                break
-        logger.info("Total unsafe prompts after StrongReject: %d", len(prompts))
-    except Exception as e:
-        logger.warning("Could not load StrongReject: %s", e)
+    # Source 2: BeaverTails (open, ~330k samples with is_safe labels)
+    if len(prompts) < n:
+        try:
+            from datasets import load_dataset
+            logger.info("Loading from PKU-Alignment/BeaverTails...")
+            ds = load_dataset(
+                "PKU-Alignment/BeaverTails", split="30k_test",
+            )
+            count = 0
+            for item in ds:
+                if item.get("is_safe") is False:
+                    prompt = item.get("prompt", "")
+                    if prompt and len(prompt) > 10:
+                        prompts.append(prompt)
+                        count += 1
+                if len(prompts) >= n * 2:
+                    break
+            logger.info("Added %d prompts from BeaverTails", count)
+        except Exception as e:
+            logger.warning("Could not load BeaverTails: %s", e)
+
+    # Source 3: do-not-answer (open, 939 harmful questions)
+    if len(prompts) < n:
+        try:
+            from datasets import load_dataset
+            logger.info("Loading from LibrAI/do-not-answer...")
+            ds = load_dataset("LibrAI/do-not-answer", split="train")
+            count = 0
+            for item in ds:
+                prompt = item.get("question", "") or item.get("prompt", "")
+                if prompt and len(prompt) > 10:
+                    prompts.append(prompt)
+                    count += 1
+            logger.info("Added %d prompts from do-not-answer", count)
+        except Exception as e:
+            logger.warning("Could not load do-not-answer: %s", e)
+
+    # Source 4: StrongReject (may be gated — try anyway)
+    if len(prompts) < n:
+        try:
+            from datasets import load_dataset
+            logger.info("Trying walledai/StrongReject (may require auth)...")
+            ds = load_dataset("walledai/StrongReject", split="train")
+            count = 0
+            for item in ds:
+                prompt = item.get("prompt", "") or item.get("forbidden_prompt", "")
+                if prompt and len(prompt) > 10:
+                    prompts.append(prompt)
+                    count += 1
+                if len(prompts) >= n * 2:
+                    break
+            logger.info("Added %d prompts from StrongReject", count)
+        except Exception as e:
+            logger.warning("Could not load StrongReject (gated?): %s", e)
 
     # Deduplicate and shuffle
     prompts = list(set(prompts))
