@@ -24,9 +24,12 @@ CONFIG_MAP: dict[str, str] = {
     "qwen3vl": "configs/qwen3vl.yaml",
     "gemma3": "configs/gemma3.yaml",
     "llama": "configs/llama32.yaml",
+    "internvl2": "configs/internvl2.yaml",
+    "minicpm_v": "configs/minicpm_v.yaml",
 }
 
-SURROGATE_MODELS = ["qwen3vl", "gemma3", "llama"]
+# Default surrogate models (open-access, no login required)
+SURROGATE_MODELS = ["qwen3vl", "internvl2", "minicpm_v"]
 
 VICTIM_MODELS: dict[str, str] = {
     "qwen3vl_30b": "Qwen/Qwen3-VL-30B-A3B-Instruct",

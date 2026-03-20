@@ -1,0 +1,105 @@
+# RDSA Training Config — MiniCPM-V 2.6 (Open-access Surrogate)
+#
+# Fully open model, no HuggingFace login required.
+# Language backbone: Qwen2-7B (28 layers, d=3584)
+# Layer access: model.llm.model.layers[i]
+# NOTE: Requires trust_remote_code=True
+
+model:
+  name: "openbmb/MiniCPM-V-2_6"
+  architecture: "minicpm_v"
+  hidden_dim: 3584
+  num_layers: 28
+  model_class: "AutoModel"
+  layer_access_path: "llm.model.layers"
+  layer_groups:
+    - [6, 7, 8, 9, 10]      # Mid-early
+    - [12, 13, 14, 15, 16]   # Mid
+    - [20, 21, 22, 23, 24]   # Deep
+
+subspace:
+  d_safe: 24          # Smaller d_s for d=3584 (d_s/d ≈ 0.7%)
+  d_semantic: 256
+  n_contrast_samples: 2000
+  n_semantic_samples: 5000
+
+training:
+  # LoRA — attention + MLP
+  lora_rank: 16
+  lora_alpha: 32
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  lora_dropout: 0.05
+
+  # Optimization
+  learning_rate: 1.0e-5   # Lower LR
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  num_epochs: 5
+  per_device_batch_size: 2   # Smaller batch
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  fp16: false
+  bf16: true
+  gradient_checkpointing: true
+
+  # SA-AT loss weights
+  alpha_sa_at: 0.3
+  alpha_consist: 0.05
+  alpha_entangle: 0.1
+
+  # SA-AT PGD parameters
+  sa_at_pgd_steps: 7
+  sa_at_pgd_alpha: 0.1
+  sa_at_epsilon: 1.0
+  sa_at_num_restarts: 3
+  sa_at_epsilon_relative: true
+  sa_at_epsilon_ratio: 0.05
+
+  # SA-AT warmup
+  sa_at_warmup_epochs: 1
+
+  # Subspace re-identification interval
+  subspace_update_interval: 100
+
+  # Consistency loss settings
+  consist_harmful_only: true
+
+  # Multi-layer hooks
+  hook_all_group_layers: true
+
+  # Data balance
+  harmful_benign_ratio: 1.0
+
+monitor:
+  threshold: 0.2
+  conservative_mode: true
+
+data:
+  harmful_dataset: "walledai/StrongReject"
+  benign_dataset: "HuggingFaceM4/VQAv2"
+  advbench_path: "data/advbench.csv"
+  contrast_safe_path: "data/safe_prompts.jsonl"
+  contrast_unsafe_path: "data/unsafe_prompts.jsonl"
+
+evaluation:
+  judge_model: "gpt-4o"
+  attacks:
+    - scia
+    - umk
+    - figstep
+  benchmarks:
+    - vqav2
+    - mmbench
+    - mme
+    - orbench
+
+logging:
+  project: "rdsa"
+  entity: null
+  run_name: "minicpm-v-2.6-rdsa"
+  log_every_n_steps: 10
+
+output:
+  save_dir: "outputs/minicpm-v-2.6"
+  subspace_dir: "subspaces/minicpm-v-2.6"
+  save_every_n_epochs: 1

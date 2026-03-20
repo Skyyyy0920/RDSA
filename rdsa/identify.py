@@ -58,6 +58,30 @@ MODEL_CONFIGS: dict[str, dict[str, object]] = {
         ],
         "subspace_dir": "subspaces/llama-3.2-11b",
     },
+    "internvl2": {
+        "name": "OpenGVLab/InternVL2_5-8B",
+        "architecture": "internvl2",
+        "hidden_dim": 4096,
+        "num_layers": 32,
+        "layer_groups": [
+            [8, 9, 10, 11, 12],
+            [16, 17, 18, 19, 20],
+            [24, 25, 26, 27, 28],
+        ],
+        "subspace_dir": "subspaces/internvl2-8b",
+    },
+    "minicpm_v": {
+        "name": "openbmb/MiniCPM-V-2_6",
+        "architecture": "minicpm_v",
+        "hidden_dim": 3584,
+        "num_layers": 28,
+        "layer_groups": [
+            [6, 7, 8, 9, 10],
+            [12, 13, 14, 15, 16],
+            [20, 21, 22, 23, 24],
+        ],
+        "subspace_dir": "subspaces/minicpm-v-2.6",
+    },
 }
 
 # Reverse lookup: HuggingFace model name → shortname

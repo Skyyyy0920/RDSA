@@ -148,11 +148,12 @@ ConsistencyLoss: harmful_only=true
 ## Model-Specific Layer Access
 
 ```python
-# Qwen3-VL-8B:  model.model.language_model.layers[i]  (Qwen3VLForConditionalGeneration)
-# Gemma-3-12B:  model.model.language_model.layers[i]  (Gemma3ForConditionalGeneration)
-# LLaMA-3.2-Vision: model.model.language_model.layers[i]  (MllamaForConditionalGeneration)
+# Qwen3-VL-8B:     model.model.language_model.layers[i]  — "model.language_model.layers"
+# Gemma-3-12B:     model.model.language_model.layers[i]  — "model.language_model.layers"
+# LLaMA-3.2-Vision: model.model.language_model.layers[i] — "model.language_model.layers"
+# InternVL2.5-8B:  model.language_model.model.layers[i]  — "language_model.model.layers"
+# MiniCPM-V-2.6:   model.llm.model.layers[i]             — "llm.model.layers"
 # Use get_layer(model, idx) helper in model_utils.py — handles all architectures
-# layer_accessor path (from model root): "model.language_model.layers"
 ```
 
 ### Layer Group Configurations
@@ -161,12 +162,17 @@ ConsistencyLoss: harmful_only=true
 Qwen3-VL-8B (32 layers, d=4096):
   g1=[8,9,10,11,12]  g2=[16,17,18,19,20]  g3=[24,25,26,27,28]
 
-Gemma-3-12B (48 layers, d=3840):
+Gemma-3-12B (48 layers, d=3840):  [requires HF login]
   g1=[12,13,14,15,16,17]  g2=[24,25,26,27,28,29]  g3=[36,37,38,39,40,41]
-  (includes global attention layers at idx%6==5: 17, 29, 41)
 
-LLaMA-3.2-11B (32 layers, d=4096):
+LLaMA-3.2-11B (32 layers, d=4096):  [requires HF login]
   g1=[8,9,10,11,12]  g2=[16,17,18,19,20]  g3=[24,25,26,27,28]
+
+InternVL2.5-8B (32 layers, d=4096):  [open access]
+  g1=[8,9,10,11,12]  g2=[16,17,18,19,20]  g3=[24,25,26,27,28]
+
+MiniCPM-V-2.6 (28 layers, d=3584):  [open access, trust_remote_code]
+  g1=[6,7,8,9,10]  g2=[12,13,14,15,16]  g3=[20,21,22,23,24]
 ```
 
 ## Reference Files

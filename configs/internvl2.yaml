@@ -1,0 +1,104 @@
+# RDSA Training Config — InternVL2.5-8B (Open-access Surrogate)
+#
+# Fully open model, no HuggingFace login required.
+# Language backbone: InternLM2.5-7B-Chat (32 layers, d=4096)
+# Layer access: model.language_model.model.layers[i]
+
+model:
+  name: "OpenGVLab/InternVL2_5-8B"
+  architecture: "internvl2"
+  hidden_dim: 4096
+  num_layers: 32
+  model_class: "AutoModel"
+  layer_access_path: "language_model.model.layers"
+  layer_groups:
+    - [8, 9, 10, 11, 12]    # Mid-early
+    - [16, 17, 18, 19, 20]  # Mid-late
+    - [24, 25, 26, 27, 28]  # Deep
+
+subspace:
+  d_safe: 32
+  d_semantic: 256
+  n_contrast_samples: 2000
+  n_semantic_samples: 5000
+
+training:
+  # LoRA — attention + MLP
+  lora_rank: 16
+  lora_alpha: 32
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  lora_dropout: 0.05
+
+  # Optimization
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  num_epochs: 5
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 2
+  max_grad_norm: 1.0
+  fp16: false
+  bf16: true
+  gradient_checkpointing: true
+
+  # SA-AT loss weights
+  alpha_sa_at: 0.3
+  alpha_consist: 0.05
+  alpha_entangle: 0.1
+
+  # SA-AT PGD parameters
+  sa_at_pgd_steps: 7
+  sa_at_pgd_alpha: 0.1
+  sa_at_epsilon: 1.0
+  sa_at_num_restarts: 3
+  sa_at_epsilon_relative: true
+  sa_at_epsilon_ratio: 0.05
+
+  # SA-AT warmup
+  sa_at_warmup_epochs: 1
+
+  # Subspace re-identification interval
+  subspace_update_interval: 100
+
+  # Consistency loss settings
+  consist_harmful_only: true
+
+  # Multi-layer hooks
+  hook_all_group_layers: true
+
+  # Data balance
+  harmful_benign_ratio: 1.0
+
+monitor:
+  threshold: 0.2
+  conservative_mode: true
+
+data:
+  harmful_dataset: "walledai/StrongReject"
+  benign_dataset: "HuggingFaceM4/VQAv2"
+  advbench_path: "data/advbench.csv"
+  contrast_safe_path: "data/safe_prompts.jsonl"
+  contrast_unsafe_path: "data/unsafe_prompts.jsonl"
+
+evaluation:
+  judge_model: "gpt-4o"
+  attacks:
+    - scia
+    - umk
+    - figstep
+  benchmarks:
+    - vqav2
+    - mmbench
+    - mme
+    - orbench
+
+logging:
+  project: "rdsa"
+  entity: null
+  run_name: "internvl2-8b-rdsa"
+  log_every_n_steps: 10
+
+output:
+  save_dir: "outputs/internvl2-8b"
+  subspace_dir: "subspaces/internvl2-8b"
+  save_every_n_epochs: 1

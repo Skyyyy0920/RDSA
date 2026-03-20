@@ -1,7 +1,8 @@
 """Model loading, layer access helpers, and LoRA application.
 
-Handles architecture-specific layer access patterns for Qwen3-VL, Gemma-3,
-and LLaMA-3.2-Vision.
+Handles architecture-specific layer access patterns for supported VLMs:
+- Qwen3-VL, Gemma-3, LLaMA-3.2-Vision (may require HF login)
+- InternVL2.5, MiniCPM-V 2.6 (fully open, no login required)
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ LAYER_ACCESSORS: dict[str, str] = {
     "qwen3vl": "model.language_model.layers",
     "gemma3": "model.language_model.layers",
     "llama_vision": "model.language_model.layers",
+    "internvl2": "language_model.model.layers",
+    "minicpm_v": "llm.model.layers",
 }
 
 # Maps architecture name -> HuggingFace model class name.
@@ -26,6 +29,8 @@ MODEL_CLASSES: dict[str, str] = {
     "qwen3vl": "Qwen3VLForConditionalGeneration",
     "gemma3": "Gemma3ForConditionalGeneration",
     "llama_vision": "MllamaForConditionalGeneration",
+    "internvl2": "AutoModel",
+    "minicpm_v": "AutoModel",
 }
 
 
@@ -172,10 +177,30 @@ def load_model_and_processor(
         model = MllamaForConditionalGeneration.from_pretrained(
             config.name, **load_kwargs
         )
+    elif architecture == "internvl2":
+        from transformers import AutoModel
+
+        load_kwargs.pop("dtype", None)
+        model = AutoModel.from_pretrained(
+            config.name, torch_dtype=torch_dtype, **load_kwargs
+        )
+    elif architecture == "minicpm_v":
+        from transformers import AutoModel
+
+        load_kwargs.pop("dtype", None)
+        model = AutoModel.from_pretrained(
+            config.name,
+            trust_remote_code=True,
+            torch_dtype=torch_dtype,
+            **load_kwargs,
+        )
     else:
         raise ValueError(f"Unsupported architecture: {architecture!r}")
 
-    processor = AutoProcessor.from_pretrained(config.name)
+    processor = AutoProcessor.from_pretrained(
+        config.name,
+        trust_remote_code=(architecture == "minicpm_v"),
+    )
 
     return model, processor
 
