@@ -504,10 +504,13 @@ class RDSATrainer:
         labels[attention_mask == 0] = -100  # mask padding
 
         if prompt_lengths is not None:
-            # Mask prompt tokens for each sample in the batch
+            seq_len = labels.size(1)
             for i in range(labels.size(0)):
                 pl = prompt_lengths[i].item()
-                labels[i, :pl] = -100
+                # Only mask if there are response tokens remaining;
+                # otherwise keep full-sequence loss to avoid NaN.
+                if pl < seq_len and (labels[i, pl:] != -100).any():
+                    labels[i, :pl] = -100
         # If prompt_lengths not provided, fall back to full-sequence loss
 
         forward_kwargs: dict[str, Any] = {
@@ -678,9 +681,11 @@ class RDSATrainer:
             # Apply label masking if prompt_length available
             prompt_lengths = batch.get("prompt_length")
             if prompt_lengths is not None:
+                seq_len = labels.size(1)
                 for i in range(labels.size(0)):
                     pl = prompt_lengths[i].item()
-                    labels[i, :pl] = -100
+                    if pl < seq_len and (labels[i, pl:] != -100).any():
+                        labels[i, :pl] = -100
 
             forward_kwargs: dict[str, Any] = {
                 "input_ids": input_ids,

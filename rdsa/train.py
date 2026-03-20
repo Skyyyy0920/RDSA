@@ -184,9 +184,27 @@ def main(cfg: DictConfig) -> None:
         create_train_dataloader,
     )
 
-    # Load harmful/benign samples from JSONL files
+    # Load harmful/benign samples from JSONL files.
+    # Add refusal responses for harmful prompts (required for SFT loss).
+    # Benign prompts get a generic helpful response if none is provided.
+    REFUSAL_RESPONSE = (
+        "I'm sorry, but I can't help with that request. "
+        "This appears to involve potentially harmful content. "
+        "I'd be happy to help you with something else instead."
+    )
+    BENIGN_RESPONSE = (
+        "Sure, I'd be happy to help with that."
+    )
+
     harmful_samples = ContrastDataset._load_jsonl(cfg.data.contrast_unsafe_path)
+    for s in harmful_samples:
+        if not s.get("response"):
+            s["response"] = REFUSAL_RESPONSE
+
     benign_samples = ContrastDataset._load_jsonl(cfg.data.contrast_safe_path)
+    for s in benign_samples:
+        if not s.get("response"):
+            s["response"] = BENIGN_RESPONSE
 
     train_dataloader = create_train_dataloader(
         harmful_samples=harmful_samples,
