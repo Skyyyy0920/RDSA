@@ -4,9 +4,6 @@ Usage:
     python -m rdsa.train --config configs/qwen3vl.yaml
     python -m rdsa.train --config-name gemma3
     python -m rdsa.train training.alpha_sa_at=0.5
-
-Can also be run directly:
-    python src/rdsa/train.py --config configs/qwen3vl.yaml
 """
 
 from __future__ import annotations
@@ -14,12 +11,6 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-
-# Ensure the package is importable when running this file directly
-# (e.g. `python src/rdsa/train.py` instead of `python -m rdsa.train`)
-_SRC_DIR = str(Path(__file__).resolve().parent.parent)
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
 
 
 def _preprocess_argv() -> None:
@@ -131,7 +122,7 @@ def _build_config(cfg: DictConfig) -> RDSAConfig:
     )
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="qwen3vl")
+@hydra.main(version_base=None, config_path="../configs", config_name="qwen3vl")
 def main(cfg: DictConfig) -> None:
     """RDSA training pipeline.
 

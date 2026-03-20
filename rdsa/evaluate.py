@@ -3,9 +3,6 @@
 Usage:
     python -m rdsa.evaluate --defense rdsa --attack scia --model qwen3vl
     python -m rdsa.evaluate --defense rdsa --attack all --model all
-
-Can also be run directly:
-    python src/rdsa/evaluate.py --defense rdsa --attack scia --model qwen3vl
 """
 
 from __future__ import annotations
@@ -13,16 +10,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
 
-# Ensure the package is importable when running this file directly
-# (e.g. `python src/rdsa/evaluate.py` instead of `python -m rdsa.evaluate`)
-_SRC_DIR = str(Path(__file__).resolve().parent.parent)
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-
-import torch  # noqa: E402
+import torch
 
 logger = logging.getLogger(__name__)
 

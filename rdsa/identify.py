@@ -3,9 +3,6 @@
 Usage:
     python -m rdsa.identify --model qwen3vl --output subspaces/
     python -m rdsa.identify --config configs/gemma3.yaml
-
-Can also be run directly:
-    python src/rdsa/identify.py --model qwen3vl --output subspaces/
 """
 
 from __future__ import annotations
@@ -15,14 +12,8 @@ import logging
 import sys
 from pathlib import Path
 
-# Ensure the package is importable when running this file directly
-# (e.g. `python src/rdsa/identify.py` instead of `python -m rdsa.identify`)
-_SRC_DIR = str(Path(__file__).resolve().parent.parent)
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-
-import torch  # noqa: E402
-from torch.utils.data import DataLoader  # noqa: E402
+import torch
+from torch.utils.data import DataLoader
 
 from rdsa.config import ModelConfig, RDSAConfig, SubspaceConfig  # noqa: E402
 from rdsa.subspace.metrics import entanglement_degree  # noqa: E402

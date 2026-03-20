@@ -1,0 +1,39 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.venv/
+env/
+
+# Outputs
+outputs/
+results/
+logs/
+checkpoints/
+figures/
+paper/
+
+# Data (large files)
+data/*.csv
+data/*.jsonl
+
+# Wandb
+wandb/
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log

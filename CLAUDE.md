@@ -22,8 +22,8 @@ Defense method against adversarial attacks on Vision-Language Models (VLMs). Tar
 - `pytest tests/ -x -q` — Run tests (stop on first failure)
 - `pytest tests/test_losses.py -k "sa_at"` — Run specific test
 - `python scripts/visualize_entanglement.py --model qwen3vl` — Generate η profile plots
-- `ruff check src/` — Lint
-- `ruff format src/` — Format
+- `ruff check rdsa/` — Lint
+- `ruff format rdsa/` — Format
 
 ## Project Structure
 
@@ -34,7 +34,7 @@ rdsa/
 │   ├── qwen3vl.yaml
 │   ├── gemma3.yaml
 │   └── llama32.yaml
-├── src/rdsa/
+├── rdsa/
 │   ├── __init__.py
 │   ├── config.py               # RDSAConfig dataclass
 │   ├── models/
@@ -136,7 +136,7 @@ ConsistencyLoss: harmful_only=true
 
 ## Critical Implementation Notes
 
-- **Hook cleanup is critical.** Leaked hooks cause silent memory leaks and wrong gradients. Use `HookManager` context manager in `src/rdsa/models/hooks.py`.
+- **Hook cleanup is critical.** Leaked hooks cause silent memory leaks and wrong gradients. Use `HookManager` context manager in `rdsa/models/hooks.py`.
 - **SVD numerical stability.** Use `torch.linalg.svd(full_matrices=False)`. For large N, compute on CPU then move result to GPU.
 - **SA-AT inner loop gradient routing.** Use `torch.autograd.grad(loss, delta)` in PGD inner loop — only delta receives gradients, not model parameters. Run PGD per-group independently to avoid graph severing.
 - **SA-AT outer loop uses additive hooks.** `AdditiveInjectionHookManager` adds `V_s @ delta*` to natural hidden states, preserving the full computation graph so gradients flow to ALL LoRA parameters.
