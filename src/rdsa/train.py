@@ -106,9 +106,17 @@ def _build_config(cfg: DictConfig) -> RDSAConfig:
         gradient_checkpointing=cfg.training.gradient_checkpointing,
         alpha_sa_at=cfg.training.alpha_sa_at,
         alpha_consist=cfg.training.alpha_consist,
+        alpha_entangle=cfg.training.get("alpha_entangle", 0.1),
         sa_at_pgd_steps=cfg.training.sa_at_pgd_steps,
         sa_at_pgd_alpha=cfg.training.sa_at_pgd_alpha,
         sa_at_epsilon=cfg.training.sa_at_epsilon,
+        sa_at_num_restarts=cfg.training.get("sa_at_num_restarts", 3),
+        sa_at_epsilon_relative=cfg.training.get("sa_at_epsilon_relative", True),
+        sa_at_epsilon_ratio=cfg.training.get("sa_at_epsilon_ratio", 0.05),
+        sa_at_warmup_epochs=cfg.training.get("sa_at_warmup_epochs", 1),
+        subspace_update_interval=cfg.training.get("subspace_update_interval", 100),
+        consist_harmful_only=cfg.training.get("consist_harmful_only", True),
+        hook_all_group_layers=cfg.training.get("hook_all_group_layers", True),
         harmful_benign_ratio=cfg.training.harmful_benign_ratio,
     )
     monitor_cfg = MonitorConfig(
