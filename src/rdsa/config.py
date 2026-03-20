@@ -28,11 +28,14 @@ class SubspaceConfig:
 
 @dataclass
 class TrainingConfig:
-    # LoRA
+    # LoRA — includes MLP modules for broader safety feature coverage
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_target_modules: list[str] = field(
-        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj"]
+        default_factory=lambda: [
+            "q_proj", "v_proj", "k_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ]
     )
     lora_dropout: float = 0.05
 
@@ -52,11 +55,30 @@ class TrainingConfig:
     alpha_sa_at: float = 0.3
     # Cross-layer consistency weight
     alpha_consist: float = 0.05
+    # Entanglement regularization weight
+    alpha_entangle: float = 0.1
 
     # SA-AT hyperparameters
     sa_at_pgd_steps: int = 7
     sa_at_pgd_alpha: float = 0.1
     sa_at_epsilon: float = 1.0
+    # PGD random restarts for stronger adversarial search
+    sa_at_num_restarts: int = 3
+    # Relative epsilon: scale epsilon by mean activation norm
+    sa_at_epsilon_relative: bool = True
+    sa_at_epsilon_ratio: float = 0.05
+
+    # SA-AT warmup: number of epochs with pure SFT before SA-AT kicks in
+    sa_at_warmup_epochs: int = 1
+
+    # Subspace re-identification interval (in optimizer steps, 0 = epoch-only)
+    subspace_update_interval: int = 100
+
+    # Consistency loss only on harmful samples to reduce over-refusal
+    consist_harmful_only: bool = True
+
+    # Multi-layer hooks: hook all layers in each group (not just representative)
+    hook_all_group_layers: bool = True
 
     # Data
     harmful_benign_ratio: float = 1.0

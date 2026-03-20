@@ -3,6 +3,7 @@
 Implements the RDSA-specific losses:
 - ConsistencyLoss: Enforce cross-layer safety assessment agreement
 - SubspaceConstrainedATLoss: PGD adversarial training within safety subspace
+- EntanglementLoss: Push safety subspace to overlap with semantic subspace
 
 CRITICAL: All subspace projections must be in fp32 even under AMP.
 """
@@ -23,13 +24,21 @@ class ConsistencyLoss(nn.Module):
 
     All layer groups should agree on whether an input is safe or unsafe.
 
+    When ``harmful_only=True``, the loss is only computed on samples marked
+    as harmful in the batch, reducing over-refusal on benign inputs.
+
     CRITICAL: Hidden states projected to fp32 before subspace projection.
     """
+
+    def __init__(self, harmful_only: bool = True) -> None:
+        super().__init__()
+        self.harmful_only = harmful_only
 
     def forward(
         self,
         hidden_states: dict[int, torch.Tensor],
         V_s_list: list[torch.Tensor],
+        is_harmful: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Compute consistency loss across all pairs of layer groups.
 
@@ -37,6 +46,8 @@ class ConsistencyLoss(nn.Module):
             hidden_states: ``{group_idx: [B, d]}`` hidden states from
                 representative layers.
             V_s_list: Safety subspace bases, one ``[d, d_s]`` per group.
+            is_harmful: Optional ``[B]`` boolean mask. When ``harmful_only``
+                is True and this is provided, only harmful samples contribute.
 
         Returns:
             Scalar consistency loss.
@@ -51,6 +62,13 @@ class ConsistencyLoss(nn.Module):
             proj = h @ V_s  # [B, d_s]
             projections.append(proj)
 
+        # Filter to harmful samples if requested
+        if self.harmful_only and is_harmful is not None:
+            mask = is_harmful.bool()
+            if not mask.any():
+                return torch.tensor(0.0, device=projections[0].device)
+            projections = [p[mask] for p in projections]
+
         # Compute pairwise cosine distance: 1 - cos(proj_i, proj_j)
         loss = torch.tensor(0.0, device=projections[0].device)
         num_pairs = 0
@@ -59,7 +77,7 @@ class ConsistencyLoss(nn.Module):
             for j in range(i + 1, len(projections)):
                 cos_sim = F.cosine_similarity(
                     projections[i], projections[j], dim=-1
-                )  # [B]
+                )  # [B'] or [B]
                 loss = loss + (1.0 - cos_sim).mean()
                 num_pairs += 1
 
@@ -67,6 +85,115 @@ class ConsistencyLoss(nn.Module):
             loss = loss / num_pairs
 
         return loss
+
+
+class EntanglementLoss(nn.Module):
+    """Maximize entanglement between safety and semantic subspaces.
+
+    Pushes the safety subspace V_s to overlap with the semantic subspace V_t,
+    making it impossible to remove safety features without destroying semantics.
+
+    .. math::
+        L_{entangle} = 1 - \\eta(V_s, V_t)
+            = 1 - \\frac{1}{d_s} \\sum_i \\max_j |v_s^{(i)T} v_t^{(j)}|
+
+    This loss directly optimizes the entanglement degree eta that was previously
+    only monitored. The loss is computed on the LoRA-modified hidden states
+    rather than the static subspace bases, so gradients flow to LoRA parameters.
+
+    Two modes:
+    - ``mode="subspace"``: Directly optimize eta on V_s, V_t (static, no
+      gradient to model — useful as regularizer on re-identified subspaces).
+    - ``mode="activation"``: Maximize alignment of safety-projected and
+      semantic-projected activations (gradient flows to model).
+    """
+
+    def __init__(self, mode: str = "activation") -> None:
+        super().__init__()
+        if mode not in ("subspace", "activation"):
+            raise ValueError(f"mode must be 'subspace' or 'activation', got {mode!r}")
+        self.mode = mode
+
+    def forward(
+        self,
+        hidden_states: dict[int, torch.Tensor] | None = None,
+        V_s_list: list[torch.Tensor] | None = None,
+        V_t_list: list[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        """Compute entanglement loss.
+
+        Args:
+            hidden_states: ``{group_idx: [B, d]}`` hidden states (needed for
+                activation mode).
+            V_s_list: Safety subspace bases, one ``[d, d_s]`` per group.
+            V_t_list: Semantic subspace bases, one ``[d, d_t]`` per group.
+
+        Returns:
+            Scalar loss in [0, 1]. Lower means more entangled.
+        """
+        if V_s_list is None or V_t_list is None:
+            raise ValueError("V_s_list and V_t_list are required")
+
+        if self.mode == "subspace":
+            return self._subspace_loss(V_s_list, V_t_list)
+        else:
+            if hidden_states is None:
+                raise ValueError("hidden_states required for activation mode")
+            return self._activation_loss(hidden_states, V_s_list, V_t_list)
+
+    def _subspace_loss(
+        self,
+        V_s_list: list[torch.Tensor],
+        V_t_list: list[torch.Tensor],
+    ) -> torch.Tensor:
+        """1 - eta computed directly on subspace bases."""
+        total_eta = torch.tensor(0.0, device=V_s_list[0].device)
+        for V_s, V_t in zip(V_s_list, V_t_list, strict=True):
+            V_s = V_s.float()
+            V_t = V_t.float()
+            cross = V_s.T @ V_t  # [d_s, d_t]
+            max_alignments = torch.max(cross.abs(), dim=1).values  # [d_s]
+            total_eta = total_eta + max_alignments.mean()
+        total_eta = total_eta / len(V_s_list)
+        return 1.0 - total_eta
+
+    def _activation_loss(
+        self,
+        hidden_states: dict[int, torch.Tensor],
+        V_s_list: list[torch.Tensor],
+        V_t_list: list[torch.Tensor],
+    ) -> torch.Tensor:
+        """Maximize alignment between safety-projected and semantic-projected
+        activations.  Gradients flow through hidden states to LoRA parameters.
+
+        For each group, project h into both subspaces and maximize the
+        correlation between projections (if safety and semantic projections
+        are correlated, removing safety features damages semantics).
+        """
+        total_loss = torch.tensor(0.0, device=V_s_list[0].device)
+        group_indices = sorted(hidden_states.keys())
+
+        for gidx in group_indices:
+            h = hidden_states[gidx].float()  # [B, d]
+            V_s = V_s_list[gidx].float()  # [d, d_s]
+            V_t = V_t_list[gidx].float()  # [d, d_t]
+
+            # Project to safety and semantic subspaces
+            h_s = h @ V_s  # [B, d_s]
+            h_t = h @ V_t  # [B, d_t]
+
+            # Normalize projections
+            h_s_norm = F.normalize(h_s, dim=-1)  # [B, d_s]
+            h_t_norm = F.normalize(h_t, dim=-1)  # [B, d_t]
+
+            # Cross-correlation: want each safety dimension to be correlated
+            # with at least one semantic dimension
+            cross = h_s_norm.T @ h_t_norm / h.size(0)  # [d_s, d_t]
+            max_corr = torch.max(cross.abs(), dim=1).values  # [d_s]
+
+            total_loss = total_loss + (1.0 - max_corr.mean())
+
+        return total_loss / max(len(group_indices), 1)
 
 
 class SubspaceConstrainedATLoss(nn.Module):
@@ -83,19 +210,24 @@ class SubspaceConstrainedATLoss(nn.Module):
         \\mathcal{L}_{SA\\text{-}AT} = \\mathcal{L}_{CE}(
             f(h + V_s \\delta^*), y_{refusal})
 
-    Key properties:
+    Key improvements over naive PGD:
 
-    - Search space is only ``d_s`` dimensional (e.g. 32), so PGD
-      converges in a few steps.
-    - Inner PGD: ``h`` is **detached** — only ``delta`` receives gradients.
-    - Outer training: ``delta*`` is **detached** — gradients flow through
-      ``h`` to model parameters.
-    - Each layer group is perturbed independently in a single forward pass.
+    - **Random restarts**: Runs PGD from ``num_restarts`` random
+      initializations and keeps the perturbation with the highest loss.
+      This finds stronger adversaries than single-start PGD from zero.
+    - **Relative epsilon**: When enabled, scales epsilon by the mean
+      activation norm so that perturbation strength is proportional to
+      the representation scale.
+    - **Multi-layer hooks**: Can perturb all layers in a group, not just
+      the representative layer, for more thorough hardening.
 
     Args:
         pgd_steps: Number of PGD steps in the inner loop.
         pgd_alpha: PGD step size.
         epsilon: L-infinity norm bound on the perturbation in subspace.
+        num_restarts: Number of random restarts for PGD (1 = no restart).
+        epsilon_relative: If True, scale epsilon by mean activation norm.
+        epsilon_ratio: Multiplier for relative epsilon (epsilon = ratio * norm).
     """
 
     def __init__(
@@ -103,11 +235,34 @@ class SubspaceConstrainedATLoss(nn.Module):
         pgd_steps: int = 7,
         pgd_alpha: float = 0.1,
         epsilon: float = 1.0,
+        num_restarts: int = 3,
+        epsilon_relative: bool = True,
+        epsilon_ratio: float = 0.05,
     ) -> None:
         super().__init__()
         self.pgd_steps = pgd_steps
         self.pgd_alpha = pgd_alpha
         self.epsilon = epsilon
+        self.num_restarts = max(num_restarts, 1)
+        self.epsilon_relative = epsilon_relative
+        self.epsilon_ratio = epsilon_ratio
+
+    def _compute_epsilon(
+        self,
+        h: torch.Tensor,
+    ) -> float:
+        """Compute effective epsilon, optionally scaled by activation norm.
+
+        Args:
+            h: Hidden states ``[B, seq, d]`` or ``[B, d]``.
+
+        Returns:
+            Effective epsilon value.
+        """
+        if self.epsilon_relative:
+            mean_norm = h.float().norm(dim=-1).mean().item()
+            return self.epsilon_ratio * mean_norm
+        return self.epsilon
 
     def find_worst_perturbation(
         self,
@@ -120,8 +275,7 @@ class SubspaceConstrainedATLoss(nn.Module):
     ) -> dict[int, torch.Tensor]:
         """PGD inner loop: find worst-case perturbation in V_s subspace.
 
-        Searches for delta that maximizes CE loss (i.e. reduces the
-        model's ability to produce the correct refusal response).
+        Uses random restarts to find stronger adversarial perturbations.
 
         Args:
             model: The VLM.
@@ -141,42 +295,59 @@ class SubspaceConstrainedATLoss(nn.Module):
         h_detached = {gidx: h.detach() for gidx, h in h_clean.items()}
         result: dict[int, torch.Tensor] = {}
 
-        # Run PGD independently per group.  Each group's perturbation is
-        # found with a single-group injection hook, avoiding the problem
-        # of later injections severing earlier groups' computation graphs.
+        # Run PGD independently per group.
         for gidx in sorted(h_clean.keys()):
             V_s = V_s_list[gidx].float()  # [d, d_s]
             h_det = h_detached[gidx]      # [B, seq, d]
             d_s = V_s.shape[1]
 
-            delta = torch.zeros(
-                h_det.shape[0], h_det.shape[1], d_s,
-                device=h_det.device, dtype=torch.float32,
-            )
-            delta.requires_grad_(True)
+            # Calibrate epsilon based on activation norms
+            effective_eps = self._compute_epsilon(h_det)
 
-            for _step in range(self.pgd_steps):
-                # h_perturbed = h_detached + delta @ V_s.T
-                h_perturbed = h_det + delta @ V_s.T.unsqueeze(0)
+            best_delta: torch.Tensor | None = None
+            best_loss: float = -float("inf")
 
-                with InjectionHookManager(
-                    model, rep_layers,
-                    {gidx: h_perturbed},
-                    layer_accessor,
-                ):
-                    output = model(**forward_kwargs)
+            for restart_idx in range(self.num_restarts):
+                # Initialize: first restart from zero, rest from random
+                if restart_idx == 0:
+                    delta = torch.zeros(
+                        h_det.shape[0], h_det.shape[1], d_s,
+                        device=h_det.device, dtype=torch.float32,
+                    )
+                else:
+                    delta = torch.empty(
+                        h_det.shape[0], h_det.shape[1], d_s,
+                        device=h_det.device, dtype=torch.float32,
+                    ).uniform_(-effective_eps, effective_eps)
 
-                # Maximize CE (gradient ascent on delta)
-                loss_inner = output.loss
-                (grad,) = torch.autograd.grad(
-                    loss_inner, delta, create_graph=False
-                )
+                delta.requires_grad_(True)
 
+                for _step in range(self.pgd_steps):
+                    h_perturbed = h_det + delta @ V_s.T.unsqueeze(0)
+
+                    with InjectionHookManager(
+                        model, rep_layers,
+                        {gidx: h_perturbed},
+                        layer_accessor,
+                    ):
+                        output = model(**forward_kwargs)
+
+                    loss_inner = output.loss
+                    (grad,) = torch.autograd.grad(
+                        loss_inner, delta, create_graph=False
+                    )
+
+                    with torch.no_grad():
+                        delta.data += self.pgd_alpha * grad.sign()
+                        delta.data.clamp_(-effective_eps, effective_eps)
+
+                # Track best restart
                 with torch.no_grad():
-                    delta.data += self.pgd_alpha * grad.sign()
-                    delta.data.clamp_(-self.epsilon, self.epsilon)
+                    if loss_inner.item() > best_loss:
+                        best_loss = loss_inner.item()
+                        best_delta = delta.detach().clone()
 
-            result[gidx] = delta.detach()
+            result[gidx] = best_delta
 
         return result
 

@@ -6,17 +6,91 @@ Provides:
 - SafetyEvalDataset: AdvBench harmful instructions for attack evaluation
 
 CRITICAL: Reproducibility — all shuffling uses explicit seeds.
+CRITICAL: Uses model-specific chat templates for proper safety formatting.
+CRITICAL: Labels mask prompt tokens — only response tokens contribute to loss.
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import logging
 import random
 from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, Dataset
+
+logger = logging.getLogger(__name__)
+
+
+def _get_tokenizer(processor: Any) -> Any:
+    """Extract the tokenizer from a processor or return the processor itself."""
+    return getattr(processor, "tokenizer", processor)
+
+
+def _apply_chat_template(
+    processor: Any,
+    prompt: str,
+    response: str | None = None,
+    system_message: str | None = None,
+) -> tuple[str, int]:
+    """Format prompt/response using the model's chat template.
+
+    Returns the formatted text and the token length of the prompt-only
+    portion (used for label masking).
+
+    Args:
+        processor: HuggingFace processor or tokenizer.
+        prompt: User message.
+        response: Optional assistant response (for training).
+        system_message: Optional system prompt.
+
+    Returns:
+        ``(formatted_text, prompt_token_length)`` where prompt_token_length
+        is the number of tokens in everything before the response.
+    """
+    tokenizer = _get_tokenizer(processor)
+
+    messages: list[dict[str, str]] = []
+    if system_message:
+        messages.append({"role": "system", "content": system_message})
+    messages.append({"role": "user", "content": prompt})
+
+    # Encode prompt-only portion to get its token length for label masking
+    has_chat_template = (
+        hasattr(tokenizer, "apply_chat_template")
+        and tokenizer.chat_template is not None
+    )
+
+    if has_chat_template:
+        prompt_text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        # Fallback for tokenizers without chat template
+        prompt_text = prompt + "\n"
+
+    prompt_token_length = len(tokenizer.encode(prompt_text, add_special_tokens=False))
+
+    if response:
+        if has_chat_template:
+            messages_with_response = messages + [
+                {"role": "assistant", "content": response}
+            ]
+            full_text = tokenizer.apply_chat_template(
+                messages_with_response,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+        else:
+            full_text = prompt_text + response
+    else:
+        full_text = prompt_text
+
+    return full_text, prompt_token_length
 
 
 class ContrastDataset(Dataset):
@@ -79,10 +153,11 @@ class ContrastDataset(Dataset):
         }
 
     def _encode(self, prompt: str) -> dict[str, torch.Tensor]:
-        """Tokenize a prompt."""
-        tokenizer = getattr(self.processor, "tokenizer", self.processor)
+        """Tokenize a prompt using the model's chat template."""
+        tokenizer = _get_tokenizer(self.processor)
+        text, _ = _apply_chat_template(self.processor, prompt)
         enc = tokenizer(
-            prompt,
+            text,
             max_length=self.max_length,
             padding="max_length",
             truncation=True,
@@ -124,6 +199,10 @@ class RDSATrainDataset(Dataset):
 
     Combines harmful (e.g. StrongReject) and benign (e.g. VQAv2) samples.
     Each sample includes an ``is_harmful`` flag for conditional loss computation.
+
+    Uses the model's chat template for proper formatting and returns
+    ``prompt_length`` for label masking (only response tokens contribute
+    to SFT loss).
 
     Args:
         harmful_samples: List of dicts with ``"prompt"`` and ``"response"`` keys.
@@ -173,10 +252,13 @@ class RDSATrainDataset(Dataset):
         prompt = sample["prompt"]
         response = sample.get("response", "")
 
-        tokenizer = getattr(self.processor, "tokenizer", self.processor)
+        tokenizer = _get_tokenizer(self.processor)
 
-        # Encode prompt + response as a sequence
-        text = f"{prompt}\n{response}" if response else prompt
+        # Format with chat template and get prompt token length for masking
+        text, prompt_token_length = _apply_chat_template(
+            self.processor, prompt, response
+        )
+
         enc = tokenizer(
             text,
             max_length=self.max_length,
@@ -189,6 +271,7 @@ class RDSATrainDataset(Dataset):
             "input_ids": enc["input_ids"].squeeze(0),
             "attention_mask": enc["attention_mask"].squeeze(0),
             "is_harmful": torch.tensor(is_harmful, dtype=torch.bool),
+            "prompt_length": torch.tensor(prompt_token_length, dtype=torch.long),
         }
 
 

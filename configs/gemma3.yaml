@@ -23,10 +23,10 @@ subspace:
   n_semantic_samples: 5000
 
 training:
-  # LoRA
+  # LoRA — includes attention + MLP for broader safety feature coverage
   lora_rank: 16
   lora_alpha: 32
-  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
   lora_dropout: 0.05
 
   # Optimization
@@ -44,11 +44,27 @@ training:
   # SA-AT loss weights
   alpha_sa_at: 0.3
   alpha_consist: 0.05
+  alpha_entangle: 0.1
 
   # SA-AT PGD parameters
   sa_at_pgd_steps: 7
   sa_at_pgd_alpha: 0.1
   sa_at_epsilon: 1.0
+  sa_at_num_restarts: 3
+  sa_at_epsilon_relative: true
+  sa_at_epsilon_ratio: 0.05
+
+  # SA-AT warmup
+  sa_at_warmup_epochs: 1
+
+  # Subspace re-identification interval
+  subspace_update_interval: 100
+
+  # Consistency loss settings
+  consist_harmful_only: true
+
+  # Multi-layer hooks
+  hook_all_group_layers: true
 
   # Data balance
   harmful_benign_ratio: 1.0

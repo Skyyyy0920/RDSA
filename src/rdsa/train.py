@@ -2,6 +2,7 @@
 
 Usage:
     python -m rdsa.train --config configs/qwen3vl.yaml
+    python -m rdsa.train --config-name gemma3
     python -m rdsa.train training.alpha_sa_at=0.5
 
 Can also be run directly:
@@ -19,6 +20,42 @@ from pathlib import Path
 _SRC_DIR = str(Path(__file__).resolve().parent.parent)
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
+
+
+def _preprocess_argv() -> None:
+    """Translate ``--config <file>`` and ``--config-path <file>`` to Hydra args.
+
+    Hydra expects ``--config-path <dir>`` and ``--config-name <stem>`` but
+    users naturally pass a full file path.  This rewrites sys.argv so that
+    ``--config configs/qwen3vl.yaml`` becomes
+    ``--config-path configs --config-name qwen3vl``.
+    """
+    for flag in ("--config", "--config-path"):
+        if flag not in sys.argv:
+            continue
+        idx = sys.argv.index(flag)
+        if idx + 1 >= len(sys.argv):
+            continue
+        value = sys.argv[idx + 1]
+        p = Path(value)
+        # Only rewrite if value looks like a file (has a suffix or the path
+        # exists as a file).  Pure directory paths are left alone.
+        if p.suffix or (p.exists() and p.is_file()):
+            # Hydra CLI --config-path is relative to CWD; resolve to
+            # absolute so it works regardless of working directory.
+            parent = p.parent if str(p.parent) != "." else Path.cwd()
+            config_dir = str(parent.resolve())
+            config_name = p.stem
+            # Replace the two argv entries with --config-path <dir>
+            sys.argv[idx] = "--config-path"
+            sys.argv[idx + 1] = config_dir
+            # Append --config-name (only if user didn't already provide one)
+            if "--config-name" not in sys.argv:
+                sys.argv.extend(["--config-name", config_name])
+            break
+
+
+_preprocess_argv()
 
 import hydra  # noqa: E402
 import torch  # noqa: E402

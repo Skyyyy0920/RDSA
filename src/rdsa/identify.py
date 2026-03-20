@@ -69,6 +69,11 @@ MODEL_CONFIGS: dict[str, dict[str, object]] = {
     },
 }
 
+# Reverse lookup: HuggingFace model name → shortname
+_HF_NAME_TO_SHORT: dict[str, str] = {
+    str(v["name"]).lower(): k for k, v in MODEL_CONFIGS.items()
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -77,9 +82,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["qwen3vl", "gemma3", "llama"],
         default="qwen3vl",
-        help="Target model shortname",
+        help=(
+            "Target model: shortname (qwen3vl, gemma3, llama) "
+            "or full HuggingFace name (e.g. Qwen/Qwen3-VL-8B-Instruct)"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -152,6 +159,27 @@ def main() -> None:
 
     args = parse_args()
 
+    # Resolve model name: accept both shortnames and full HuggingFace names
+    model_key = args.model
+    if model_key not in MODEL_CONFIGS:
+        resolved = _HF_NAME_TO_SHORT.get(model_key.lower())
+        if resolved is not None:
+            logger.info(
+                "Resolved HuggingFace name '%s' → shortname '%s'",
+                model_key,
+                resolved,
+            )
+            model_key = resolved
+        else:
+            logger.error(
+                "Unknown model '%s'. Valid shortnames: %s. "
+                "Valid HuggingFace names: %s",
+                model_key,
+                list(MODEL_CONFIGS.keys()),
+                [str(v["name"]) for v in MODEL_CONFIGS.values()],
+            )
+            sys.exit(1)
+
     # Build config
     if args.config is not None:
         from omegaconf import OmegaConf
@@ -165,7 +193,7 @@ def main() -> None:
             layer_groups=[list(g) for g in cfg.model.layer_groups],
         )
     else:
-        model_dict = MODEL_CONFIGS[args.model]
+        model_dict = MODEL_CONFIGS[model_key]
         model_cfg = ModelConfig(
             name=str(model_dict["name"]),
             architecture=str(model_dict["architecture"]),
@@ -190,7 +218,7 @@ def main() -> None:
         output_dir = Path(args.output)
     else:
         # Default: use model-specific subspace_dir from MODEL_CONFIGS
-        model_dict = MODEL_CONFIGS[args.model]
+        model_dict = MODEL_CONFIGS[model_key]
         output_dir = Path(str(model_dict["subspace_dir"]))
     output_dir.mkdir(parents=True, exist_ok=True)
 

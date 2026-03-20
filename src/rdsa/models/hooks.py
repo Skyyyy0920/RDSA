@@ -324,6 +324,43 @@ def get_representative_layer_indices(layer_groups: list[list[int]]) -> list[int]
     return [group[len(group) // 2] for group in layer_groups]
 
 
+def get_all_group_layer_indices(layer_groups: list[list[int]]) -> list[int]:
+    """Return all layer indices across all groups, deduplicated and sorted.
+
+    Used when ``hook_all_group_layers=True`` to harden every layer in
+    each group, not just the representative.
+
+    Args:
+        layer_groups: List of layer index lists, one per group.
+
+    Returns:
+        Sorted list of unique layer indices across all groups.
+    """
+    all_layers: set[int] = set()
+    for group in layer_groups:
+        all_layers.update(group)
+    return sorted(all_layers)
+
+
+def group_idx_for_layer(
+    layer_idx: int,
+    layer_groups: list[list[int]],
+) -> int | None:
+    """Return the group index a layer belongs to, or None if not in any group.
+
+    Args:
+        layer_idx: Layer index to look up.
+        layer_groups: Layer group definitions.
+
+    Returns:
+        Group index (0-based) or None.
+    """
+    for gidx, group in enumerate(layer_groups):
+        if layer_idx in group:
+            return gidx
+    return None
+
+
 def extract_group_activations(
     model: nn.Module,
     layer_groups: list[list[int]],

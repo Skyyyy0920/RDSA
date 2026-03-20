@@ -226,13 +226,41 @@ def count_trainable_parameters(model: nn.Module) -> tuple[int, int]:
 def enable_gradient_checkpointing(model: nn.Module) -> None:
     """Enable gradient checkpointing for memory-efficient training.
 
+    Uses ``use_reentrant=False`` (modern PyTorch default) so that:
+    - Forward hooks work correctly with the computation graph
+    - No spurious "None of the inputs have requires_grad=True" warnings
+    - SA-AT injection hooks preserve gradient flow through delta
+
     Args:
         model: The model to enable gradient checkpointing on.
     """
+    gc_kwargs = {"use_reentrant": False}
     if hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs=gc_kwargs,
+        )
     elif hasattr(model, "base_model") and hasattr(
         model.base_model, "gradient_checkpointing_enable"
     ):
         # LoRA-wrapped models
-        model.base_model.gradient_checkpointing_enable()
+        model.base_model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs=gc_kwargs,
+        )
+
+
+def disable_gradient_checkpointing(model: nn.Module) -> None:
+    """Disable gradient checkpointing.
+
+    Used to temporarily turn off checkpointing during SA-AT PGD inner
+    loop, where we only need the delta→loss graph (not full model graph)
+    and checkpointing would waste compute on re-computation.
+
+    Args:
+        model: The model to disable gradient checkpointing on.
+    """
+    if hasattr(model, "gradient_checkpointing_disable"):
+        model.gradient_checkpointing_disable()
+    elif hasattr(model, "base_model") and hasattr(
+        model.base_model, "gradient_checkpointing_disable"
+    ):
+        model.base_model.gradient_checkpointing_disable()

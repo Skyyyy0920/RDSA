@@ -94,23 +94,32 @@ Distribute safety representations across G layer groups. Attack cost scales from
 - `V_s`: Safety subspace basis, `torch.Tensor` shape `[d, d_s]`, d_s=32 by default
 - `V_t`: Semantic subspace basis, `torch.Tensor` shape `[d, d_t]`, d_t=256 by default
 - Layer groups (Qwen3-VL-8B): `[[8-12], [16-20], [24-28]]` — skip shallow layers, gap between groups
-- `η = (1/kₛ) Σᵢ maxⱼ |vₛ⁽ⁱ⁾ᵀ vₜ⁽ʲ⁾|` — entanglement degree (monitored, not directly optimized)
+- `η = (1/kₛ) Σᵢ maxⱼ |vₛ⁽ⁱ⁾ᵀ vₜ⁽ʲ⁾|` — entanglement degree (directly optimized via EntanglementLoss)
 
 ### Training Pipeline (3 steps)
 
 1. **Identify** — SVD on activation differences (safe vs unsafe) → V_s per layer group; PCA on normal data → V_t
-2. **Train (SA-AT)** — Fine-tune with LoRA. Total loss: `L_SFT + α_sa_at·L_SA-AT + α_consist·L_consist`
-   - SA-AT inner loop: PGD finds δ* = argmax_{‖δ‖≤ε} L_CE(f(h + V_s·δ), y_refusal) per group
+2. **Train (SA-AT)** — Fine-tune with LoRA (attention + MLP). Total loss: `L_SFT + α_sa_at·L_SA-AT + α_consist·L_consist + α_entangle·L_entangle`
+   - **Label masking**: SFT loss computed only on response tokens (prompt tokens masked to -100)
+   - **Chat template**: All training data formatted with model-specific chat templates
+   - **SA-AT warmup**: Pure SFT for first N epochs before adversarial training begins
+   - SA-AT inner loop: Random-restart PGD finds δ* = argmax_{‖δ‖≤ε} L_CE(f(h + V_s·δ), y_refusal) per group
    - SA-AT outer loop: L_SA-AT = L_CE(f(h + V_s·δ*), y_refusal) — train to refuse under worst perturbation
-   - Consistency: enforce cross-layer agreement on safety assessments
+   - **Relative epsilon**: ε scaled by mean activation norm (`ε = ratio × ‖h‖_mean`)
+   - Consistency: enforce cross-layer agreement on safety assessments (harmful samples only to reduce over-refusal)
+   - **Entanglement**: L_entangle = 1 - η, directly maximizes safety/semantic subspace overlap
+   - **Multi-layer hooks**: SA-AT perturbs all layers in each group, not just the representative
+   - **Periodic subspace refresh**: V_s/V_t re-identified every N optimizer steps within epochs
 3. **Monitor** — Inference anomaly detection via cross-layer safety confidence variance
 
 ### Default Hyperparameters
 
 ```
-d_s=32, d_t=256, G=3, α_sa_at=0.3, α_consist=0.05, τ=0.2
-SA-AT: pgd_steps=7, pgd_alpha=0.1, epsilon=1.0
-LoRA: rank=16, alpha=32, lr=2e-5, epochs=5
+d_s=32, d_t=256, G=3, α_sa_at=0.3, α_consist=0.05, α_entangle=0.1, τ=0.2
+SA-AT: pgd_steps=7, pgd_alpha=0.1, epsilon=1.0, num_restarts=3, epsilon_relative=true, epsilon_ratio=0.05
+SA-AT warmup: 1 epoch, subspace_update_interval=100 steps
+LoRA: rank=16, alpha=32, lr=2e-5, epochs=5, targets=[q,k,v,o,gate,up,down]_proj
+ConsistencyLoss: harmful_only=true
 ```
 
 ## Coding Conventions
