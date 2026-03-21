@@ -83,11 +83,11 @@ def run_training(
         return True
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True)
         logger.info("Training completed: %s", output_dir)
         return True
-    except subprocess.CalledProcessError as e:
-        logger.error("Training failed: %s", e.stderr[-500:] if e.stderr else "")
+    except subprocess.CalledProcessError:
+        logger.error("Training failed: %s", output_dir)
         return False
 
 
@@ -133,7 +133,7 @@ def run_evaluation(
         return {}
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True)
         # Try to load results
         results_file = Path(output_dir) / "evaluation_results.json"
         if results_file.exists():
@@ -142,8 +142,8 @@ def run_evaluation(
             key = f"{model}/{defense}/{attack}"
             return all_results.get(key, {})
         return {"status": "completed"}
-    except subprocess.CalledProcessError as e:
-        logger.error("Evaluation failed: %s", e.stderr[-300:] if e.stderr else "")
+    except subprocess.CalledProcessError:
+        logger.error("Evaluation failed: %s/%s/%s", model, defense, attack)
         return {"error": 1.0}
 
 
@@ -183,10 +183,10 @@ def run_benchmark(
         return {}
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True)
         return {"status": "completed"}
-    except subprocess.CalledProcessError as e:
-        logger.error("Benchmark failed: %s", e.stderr[-300:] if e.stderr else "")
+    except subprocess.CalledProcessError:
+        logger.error("Benchmark failed: %s/%s", model, defense)
         return {"error": 1.0}
 
 
