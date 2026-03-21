@@ -72,7 +72,7 @@ def run_training(
     """
     cmd = [
         sys.executable, "-m", "rdsa.train",
-        f"--config={config_path}",
+        "--config", config_path,
     ]
     for key, value in overrides.items():
         cmd.append(f"{key}={value}")
@@ -118,12 +118,12 @@ def run_evaluation(
     """
     cmd = [
         sys.executable, "-m", "rdsa.evaluate",
-        f"--model={model}",
-        f"--defense={defense}",
-        f"--attack={attack}",
-        f"--checkpoint-dir={checkpoint_dir}",
-        f"--output-dir={output_dir}",
-        f"--max-samples={max_samples}",
+        "--model", model,
+        "--defense", defense,
+        "--attack", attack,
+        "--checkpoint-dir", checkpoint_dir,
+        "--output-dir", output_dir,
+        "--max-samples", str(max_samples),
     ]
     if extra_args:
         cmd.extend(extra_args)
@@ -170,12 +170,12 @@ def run_benchmark(
     """
     cmd = [
         sys.executable, "-m", "rdsa.evaluate",
-        f"--model={model}",
-        f"--defense={defense}",
-        f"--checkpoint-dir={checkpoint_dir}",
-        f"--output-dir={output_dir}",
-        "--attack=none",
-        f"--benchmarks={' '.join(benchmarks)}",
+        "--model", model,
+        "--defense", defense,
+        "--checkpoint-dir", checkpoint_dir,
+        "--output-dir", output_dir,
+        "--attack", "none",
+        "--benchmarks", *benchmarks,
     ]
 
     logger.info("CMD: %s", " ".join(cmd))
