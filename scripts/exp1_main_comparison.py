@@ -15,7 +15,6 @@ import argparse
 import logging
 
 from experiment_utils import (
-    ALL_ATTACKS,
     BASELINE_DEFENSES,
     CONFIG_MAP,
     SEEDS,
@@ -68,7 +67,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Exp 1: Main Comparison")
     parser.add_argument("--model", type=str, default="qwen3vl",
                         help="Model shortname or 'all'")
-    parser.add_argument("--attacks", nargs="*", default=ALL_ATTACKS)
+    parser.add_argument("--attacks", nargs="*",
+                        default=["none", "scia", "umk", "figstep",
+                                 "adaptive_scia", "adaptive_pgd"])
     parser.add_argument("--defenses", nargs="*",
                         default=BASELINE_DEFENSES + ["rdsa"])
     parser.add_argument("--seeds", nargs="*", type=int, default=SEEDS)
