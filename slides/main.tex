@@ -28,7 +28,7 @@
 \setbeamerfont{title}{series=\bfseries,size=\huge}
 
 % ── Packages ──
-\usepackage{graphicx,amsmath,amssymb,booktabs,tikz,pgfplots}
+\usepackage{graphicx,amsmath,amssymb,booktabs,tikz,pgfplots,pifont}
 \usepackage[T1]{fontenc}
 \usetikzlibrary{arrows.meta,positioning,shapes,calc,decorations.pathreplacing,fit,backgrounds,patterns}
 \pgfplotsset{compat=1.18}
@@ -201,12 +201,12 @@
 \begin{frame}{RDSA Training Pipeline}
 \centering
 \begin{tikzpicture}[scale=0.72, transform shape,
-  step/.style={draw,rounded corners=5pt,minimum height=1.6cm,minimum width=3.5cm,align=center,font=\small},
+  stp/.style={draw,rounded corners=5pt,minimum height=1.6cm,minimum width=3.5cm,align=center,font=\small},
   arr/.style={->,>=Stealth,thick,gray},
   detail/.style={font=\scriptsize,align=center}
 ]
   % Step 1
-  \node[step,fill=primary!10,draw=primary] (s1) at (0,0) {\textbf{Step 1: Identify}\\$V_s$, $V_t$ per group};
+  \node[stp,fill=primary!10,draw=primary] (s1) at (0,0) {\textbf{Step 1: Identify}\\$V_s$, $V_t$ per group};
   \node[detail,below=0.2cm of s1,primary] {
     SVD on $\Delta H = H_\text{unsafe} - H_\text{safe}$\\
     PCA on $H_\text{normal}$\\
@@ -214,7 +214,7 @@
   };
 
   % Step 2
-  \node[step,fill=accent!10,draw=accent] (s2) at (5.5,0) {\textbf{Step 2: Train}\\Multi-objective SA-AT};
+  \node[stp,fill=accent!10,draw=accent] (s2) at (5.5,0) {\textbf{Step 2: Train}\\Multi-objective SA-AT};
   \node[detail,below=0.2cm of s2,accent] {
     $\mathcal{L} = \mathcal{L}_\text{SFT} + \alpha_1 \mathcal{L}_\text{SA-AT}$\\
     $+ \alpha_2 \mathcal{L}_\text{consist} + \alpha_3 \mathcal{L}_\text{entangle}$\\
@@ -222,7 +222,7 @@
   };
 
   % Step 3
-  \node[step,fill=safegreen!10,draw=safegreen] (s3) at (11,0) {\textbf{Step 3: Monitor}\\Inference-time};
+  \node[stp,fill=safegreen!10,draw=safegreen] (s3) at (11,0) {\textbf{Step 3: Monitor}\\Inference-time};
   \node[detail,below=0.2cm of s3,safegreen] {
     Cross-layer variance\\
     $\text{LCIV} = \text{Var}_k[\sigma(w_k^T V_s^T h_k)]$\\
@@ -304,18 +304,14 @@
 \centering
 \begin{tikzpicture}[scale=0.6, transform shape]
   % Transformer layers stack
-  \foreach \i/\label/\col in {
-    0/{L0--L7}/{lightbg},
-    1/{Group 1: L8--12}/{primary!20},
-    2/{L13--15}/{lightbg},
-    3/{Group 2: L16--20}/{accent!20},
-    4/{L21--23}/{lightbg},
-    5/{Group 3: L24--28}/{safegreen!20},
-    6/{L29--32}/{lightbg}
-  } {
-    \pgfmathsetmacro{\ypos}{\i*1.0}
-    \node[draw,fill=\col,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer\i) at (0,\ypos) {\label};
-  }
+  % Layer stack (manual for color reliability)
+  \node[draw,fill=lightbg,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer0) at (0,0) {L0--L7};
+  \node[draw,fill=primary!20,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer1) at (0,1) {Group 1: L8--12};
+  \node[draw,fill=lightbg,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer2) at (0,2) {L13--15};
+  \node[draw,fill=accent!20,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer3) at (0,3) {Group 2: L16--20};
+  \node[draw,fill=lightbg,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer4) at (0,4) {L21--23};
+  \node[draw,fill=safegreen!20,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer5) at (0,5) {Group 3: L24--28};
+  \node[draw,fill=lightbg,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer6) at (0,6) {L29--32};
 
   % V_s labels
   \node[font=\scriptsize\bfseries,primary,right] at (2.8,1) {$V_s^{(1)}$};
@@ -326,9 +322,9 @@
   \draw[decorate,decoration={brace,amplitude=6pt},thick,dangerred]
     (3.5,0.6) -- (3.5,5.4) node[midway,right=8pt,font=\scriptsize,dangerred,align=left] {Attacker must\\break \textbf{all 3}};
 
-  % Input arrow
-  \draw[->,>=Stealth,thick] (0,-0.8) -- (0,-0.2) node[midway,left,font=\scriptsize] {Input};
-  \draw[->,>=Stealth,thick] (0,6.2) -- (0,6.8) node[midway,left,font=\scriptsize] {Output};
+  % Input/output arrows
+  \draw[->,>=Stealth,thick] (0,-0.8) -- (0,-0.4) node[midway,left,font=\scriptsize] {Input};
+  \draw[->,>=Stealth,thick] (0,6.4) -- (0,6.9) node[midway,left,font=\scriptsize] {Output};
 \end{tikzpicture}
 \end{column}
 \begin{column}{0.45\textwidth}
@@ -362,8 +358,8 @@ $$O(\varepsilon_1^*) \;\to\; O\!\left(\sqrt{\textstyle\sum_k (\varepsilon_k^*)^2
     \node[font=\scriptsize,accent] at (1.5,-0.5) {$V_t$ (semantic)};
     \node[font=\scriptsize,dangerred,rotate=90] at (-0.6,1.2) {$V_s$ (safety)};
 
-    % Scissors
-    \node[font=\large,dangerred] at (0.5,1.2) {\ding{34}};
+    % Cut indicator
+    \node[font=\large,dangerred] at (0.5,1.2) {\ding{56}};
     \node[font=\scriptsize,dangerred,align=center] at (2.3,2) {Can cut safety\\without damage};
   \end{scope}
 
