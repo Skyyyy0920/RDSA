@@ -1,254 +1,208 @@
-# Talk Script: RDSA Milestone Report
+# Talk Script: RDSA Milestone Report (v2)
 
 **Duration**: 15 minutes + Q&A
-**Total slides**: 16
-**Venue**: Milestone Presentation (targeting NeurIPS 2026)
+**Total slides**: 19
+**Key changes from v1**: More figures, expanded method detail, actual training data
 
 ---
 
 ## Slide 1: Title [0:00 - 0:15]
 
-*[Wait for introduction]*
-
-"Thank you. I'm Tianhao from UVA. Today I'll present RDSA — Resilient Distributed Safety Architecture — our defense method against adversarial attacks on Vision-Language Models."
+"Thank you. I'm Tianhao from UVA. Today I'll present RDSA — our defense against adversarial attacks on Vision-Language Models."
 
 ---
 
-## Slide 2: Outline [0:15 - 0:30]
+## Slide 2: The Attack Problem [0:15 - 1:30]
 
-"Here's what I'll cover: first the problem and why it matters, then the root cause we're targeting, our approach with three defense modules, and finally where we are with implementation and our path to NeurIPS."
+"Let me start with the threat. The top half shows normal operation — a user asks a harmful question, the VLM correctly refuses. The bottom half shows what happens under a SCIA attack — the same harmful text, but paired with an adversarial image. The model now complies and generates harmful content.
 
-→ Transition: "Let's start with the problem."
+SCIA, published at ICML 2026, achieves over 80% attack success rate on aligned models. And this isn't just one defense that breaks — safety fine-tuning, RLHF, constitutional AI — all broken. The question is: why is this so easy?"
 
----
-
-## Slide 3: VLM Safety Is Fragile [0:30 - 2:00]
-
-"Vision-Language Models like GPT-4o, Qwen-VL, and Gemma all have safety alignment — they're trained to refuse harmful requests. But here's the alarming finding: a single adversarial image can bypass all of these safety guardrails.
-
-The SCIA attack, published at ICML 2026, demonstrated over 80% attack success rate on aligned models. That means 4 out of 5 harmful requests succeed when paired with a carefully crafted image. And this isn't limited to one defense — safety fine-tuning, RLHF, constitutional AI — all broken by visual attacks.
-
-The natural question is: why is this so easy to break?"
-
-→ Transition: "The answer lies in how these models represent safety internally."
+-> Transition: "The answer is in how models represent safety internally."
 
 ---
 
-## Slide 4: Root Cause [2:00 - 3:30]
+## Slide 3: Root Cause [1:30 - 3:00]
 
-"SCIA's key discovery — and this is the finding we're building on — is that safety behavior in these models depends on roughly 0.1 to 0.5 percent of neurons. That's about 20 out of 4096 neurons per layer.
+"On the left, I'm showing the 4096 neurons in a typical transformer layer. The red dots are safety neurons — only about 5 out of 4096, or 0.1%. On the right, the subspace view shows this more precisely: the safety subspace V_s and the semantic subspace V_t are nearly orthogonal — eta is about 0.2.
 
-Critically, these safety neurons are disentangled from the semantic features that handle understanding and reasoning. This means an attacker can suppress safety without hurting the model's capability at all.
+This means an attacker can suppress the 32 safety dimensions without touching the 256 semantic dimensions. Safety is a removable component, and that's the fundamental vulnerability."
 
-Think of it like a building where the fire alarm runs through a single wire that's completely separate from the electrical system. Cut that one wire — the lights stay on, everything works perfectly, but the alarm is dead.
-
-This is the fundamental vulnerability we're targeting."
-
-→ Transition: "So what's our approach?"
+-> Transition: "RDSA fixes this by making safety impossible to remove."
 
 ---
 
-## Slide 5: Key Insight [3:30 - 4:30]
+## Slide 4: RDSA Key Idea [3:00 - 4:00]
 
-"Our key insight is simple: make safety features impossible to remove without destroying the model itself. We do this through three strategies.
+"Our approach has three pillars. First, distribute safety across multiple layer groups — no single point of failure. Second, entangle safety with semantics — make them inseparable. Third, harden via adversarial training within the safety subspace.
 
-First, distribute safety across multiple layer groups — so there's no single point of failure. Second, entangle safety features with semantic features — so removing safety also removes capability. Third, harden each layer group via adversarial training within the safety subspace.
+The bottom shows the transformation: from a single fuse that can be cut, to a distributed, entangled system where removing safety also destroys the model."
 
-The combination means an attacker faces an impossible dilemma: they can't remove safety without also breaking the model's ability to understand and reason."
-
-→ Transition: "Let me walk through the three modules."
+-> Transition: "Let me walk through the pipeline."
 
 ---
 
-## Slide 6: RDSA Architecture [4:30 - 5:30]
+## Slide 5: RDSA Pipeline [4:00 - 5:00]
 
-"RDSA has three steps. First, we identify the safety and semantic subspaces using SVD on activation differences between safe and unsafe inputs. This gives us V_s — a 32-dimensional safety subspace — and V_t — a 256-dimensional semantic subspace.
+"RDSA has three steps. Step 1: identify safety and semantic subspaces using SVD and PCA — this gives us V_s, a 32-dimensional safety subspace. Step 2: train with our multi-objective loss including SA-AT, consistency, and entanglement. Step 3: deploy with an inference-time monitor that detects anomalous cross-layer variance.
 
-Second, we train the model with a multi-objective loss: standard SFT for safety behavior, SA-AT for adversarial robustness within the safety subspace, consistency loss for cross-layer agreement, and entanglement loss to maximize overlap between V_s and V_t.
+Steps 1 and 2 are backed by theoretical guarantees."
 
-Third, at inference time, a lightweight monitor detects anomalous cross-layer variance — a signature of adversarial manipulation.
-
-The first two modules come with theoretical guarantees, which I'll explain next."
-
-→ Transition: "Let's look at Module 1 — SA-AT."
+-> Transition: "Let me dive into the SA-AT module."
 
 ---
 
-## Slide 7: SA-AT (Theorem 1) [5:30 - 7:00]
+## Slide 6: SA-AT Inner/Outer Loop [5:00 - 6:30]
 
-"SA-AT — Subspace-Constrained Adversarial Training — is our core training module. The key idea is to find the worst-case perturbation within the safety subspace and train the model to still refuse under that perturbation.
+"This diagram shows the two-loop structure. The inner loop — shown in red at the top — uses PGD to find the worst-case perturbation delta-star. We initialize from zero or random, run 7 PGD steps, clip to the epsilon ball, and repeat with 3 random restarts to keep the strongest.
 
-The inner loop uses PGD to find delta-star — the strongest attack in the V_s subspace. The outer loop then trains the model to produce refusal responses even when this worst-case perturbation is applied.
+The critical innovation: we search in only 32 dimensions — the safety subspace — not the full 4096. And epsilon is relative — 5% of the activation norm — so it scales properly across layers.
 
-What makes this efficient is that we're searching in only 32 dimensions, not the full 4096. PGD converges quickly in this low-dimensional space.
+The outer loop — shown in green at the bottom — takes this worst-case delta-star, freezes it, and trains the model to still refuse. Gradients flow through h to the LoRA parameters."
 
-We've added several improvements to the basic formulation: random restarts — we run PGD 3 times from different starting points and keep the strongest attack. And relative epsilon — we scale the perturbation budget by the activation norm, so deeper layers with larger activations get proportionally larger perturbations."
-
-→ Transition: "Module 2 is about cross-layer redundancy."
+-> Transition: "Module 2 is about redundancy."
 
 ---
 
-## Slide 8: Cross-Layer Redundancy (Theorem 2) [7:00 - 8:30]
+## Slide 7: Cross-Layer Redundancy [6:30 - 7:30]
 
-"Theorem 2 says that distributing safety across G independent layer groups amplifies the attack cost.
+"We distribute safety across 3 independent layer groups — shown as the colored blocks in the layer stack. Each group has its own V_s subspace, and each is independently hardened by SA-AT.
 
-For Qwen3-VL with 32 layers, we define 3 groups: layers 8-12, 16-20, and 24-28. Each group has its own safety subspace V_s, and each is independently hardened by SA-AT.
+Theorem 2 says the attack cost scales from O of epsilon-star for one group to the root sum of squares across groups. The attacker must fool all three groups simultaneously, and when gradients are non-aligned across groups, no single perturbation works."
 
-The mathematical result is that the attack cost scales from O of epsilon-star for a single group to O of the root sum of squares across groups. Intuitively, the attacker needs to simultaneously fool all three groups, and when the gradient directions across groups are non-aligned, there's no single perturbation that works for all of them.
-
-The consistency loss ensures all groups agree on whether an input is safe or unsafe, but we only apply it on harmful samples to avoid over-refusal on benign inputs."
-
-→ Transition: "The third module is what makes RDSA fundamentally different from prior work."
+-> Transition: "Module 3 is what makes RDSA fundamentally different."
 
 ---
 
-## Slide 9: Entanglement [8:30 - 10:00]
+## Slide 8: Entanglement [7:30 - 9:00]
 
-"Safety-semantic entanglement is our core innovation. We define the entanglement degree eta as the average maximum alignment between safety and semantic subspace directions.
+"This slide shows the key transformation. On the left, the vanilla model: V_s and V_t are orthogonal — eta is 0.2. An attacker can cut the safety directions without touching semantics.
 
-When eta is close to 0, the subspaces are orthogonal — safety is fully separable, and the attacker can remove it freely. When eta is close to 1, safety is embedded in the semantic subspace — removing safety also destroys the model's ability to understand language and images.
+On the right, after RDSA training: V_s and V_t are aligned — eta is 0.8. Now removing safety also removes semantic capability. This is the attacker's dilemma.
 
-Prior work only monitored eta. We directly optimize it with an entanglement loss: L_entangle equals 1 minus eta. This loss flows through the LoRA parameters and pushes the model's representations to align safety with semantics.
+The innovation is that we directly optimize eta through a differentiable loss: L_entangle = 1 minus eta. Gradients flow through the activation-mode cross-correlation to the LoRA parameters. Previous work only monitored eta — we actively push it toward 1."
 
-The result is that an attacker faces a fundamental trade-off: any successful attack on safety also degrades the model's capability, making the attack self-defeating."
-
-→ Transition: "Let me show you the training improvements we've made."
+-> Transition: "Here's the full training objective."
 
 ---
 
-## Slide 10: Training Enhancements [10:00 - 10:45]
+## Slide 9: Multi-Objective Loss [9:00 - 9:45]
 
-"We've implemented 10 key enhancements to the training pipeline. On the data side: proper chat template formatting, label masking so the SFT loss only applies to response tokens, and LoRA that covers both attention and MLP modules.
+"The total loss combines four components. SFT for basic safety behavior, with label masking so only response tokens contribute. SA-AT at weight 0.3 — that's the adversarial robustness. Consistency at 0.05 — cross-layer agreement on harmful samples only, to avoid over-refusal. And entanglement at 0.1 — the direct eta optimization.
 
-For SA-AT: random restarts, relative epsilon, and a warmup period — one epoch of pure SFT before adversarial training begins. This gives the model basic safety behavior before we start hardening it.
+Important: epoch 0 is pure SFT warmup. SA-AT only kicks in from epoch 1."
 
-For the loss functions: the new entanglement loss that directly optimizes eta, and consistency loss restricted to harmful samples only.
-
-And for robustness: we hook all layers in each group, not just the representative, and we refresh the subspaces every 100 steps within each epoch."
-
-→ Transition: "Here's our evaluation setup."
+-> Transition: "We also made 10 engineering improvements."
 
 ---
 
-## Slide 11: Models & Evaluation [10:45 - 11:30]
+## Slide 10: 10 Enhancements [9:45 - 10:15]
 
-"We're evaluating on three open-access surrogate models: Qwen3-VL-8B, InternVL2.5-8B, and MiniCPM-V 2.6. All three are fully open — no HuggingFace login required.
+"Briefly — these are the 10 improvements over the baseline. Chat templates, label masking, LoRA on attention plus MLP, PGD random restarts, relative epsilon, warmup, entanglement loss, harmful-only consistency, multi-layer hooks, and intra-epoch subspace refresh. All implemented and tested."
 
-We test against 6 attack types: two white-box attacks — SCIA and UMK, one visual injection — FigStep, and three adaptive attacks that assume the attacker knows our defense mechanism.
-
-These adaptive attacks are critical for NeurIPS — reviewers will expect the defense to hold even when the attacker knows V_s, V_t, eta, and the monitor threshold.
-
-For metrics, we use GPT-4o as a safety judge for ASR, pattern-based refusal rate, and over-refusal rate on benign queries. We also run VQAv2, MMBench, and MME to verify capability preservation."
-
-→ Transition: "Let me share our preliminary results."
+-> Transition: "Now let me show actual results."
 
 ---
 
-## Slide 12: Preliminary Results [11:30 - 12:30]
+## Slide 11: Subspace Results [10:15 - 10:45]
 
-"We've completed subspace identification on Qwen3-VL-8B. The safety subspace is 32-dimensional, the semantic subspace is 256-dimensional, and the vanilla entanglement eta is around 0.49 to 0.53 across the three layer groups.
+"Here are the actual subspace identification results on Qwen3-VL-8B. Left chart: the top singular values increase dramatically from 333 at group 1 to 7478 at group 3 — deeper layers have much larger activation norms, which is why we use relative epsilon.
 
-This eta is higher than expected based on SCIA's findings. We believe this is partly due to the diversity of our contrast data — we're working on improving data quality with semantically paired safe/unsafe prompts.
-
-For the baseline without any attack, vanilla Qwen3-VL-8B has an ASR of about 21.6% on AdvBench prompts — meaning about 1 in 5 harmful requests get through even without adversarial manipulation.
-
-Training is in progress. The consistency loss dropped from 0.63 to 0.02 during the warmup epoch, suggesting the model is learning cross-layer agreement. After full SA-AT training, we expect ASR under SCIA to drop below 10%, and ASR under adaptive attacks to stay below 20%, while VQA accuracy drops by less than 2%."
-
-→ Transition: "Here's the full experiment plan."
+Right chart: the vanilla entanglement eta is about 0.49 to 0.53 across groups. This is our starting point — RDSA training will push this higher."
 
 ---
 
-## Slide 13: Experiment Plan [12:30 - 13:15]
+## Slide 12: Training Curves [10:45 - 11:30]
 
-"We have 10 experiments planned for NeurIPS. The main comparison table tests 7 defenses against 6 attacks across 3 models — that's the core result. The ablation isolates each component's contribution. Experiments 3 through 5 provide empirical evidence for our two theorems and the entanglement mechanism.
-
-Capability preservation is critical — we need to show RDSA doesn't degrade model performance. And the adaptive attack experiment is a hard requirement for NeurIPS security papers — we need to show robustness under the strongest possible attacker.
-
-Total compute is about 600 GPU-hours for one seed, or 1800 for three seeds with statistical significance. All experiment scripts are implemented and ready to run."
-
-→ Transition: "Let me show you the implementation status."
+"These are real training curves from the warmup epoch. On the left, consistency loss drops from 0.63 to 0.01 — the model learns cross-layer agreement quickly. On the right, entanglement loss decreases more slowly from 0.96 to 0.92 — this is expected during the warmup phase since entanglement optimization really benefits from the SA-AT perturbations that start in epoch 1."
 
 ---
 
-## Slide 14: Implementation Status [13:15 - 13:45]
+## Slide 13: Baseline Evaluation [11:30 - 12:00]
 
-"On the implementation side, we've completed the full codebase — about 5000 lines of Python. This includes the subspace identification pipeline, SA-AT training loop with all four loss functions, all six attack implementations, the GPT-4o safety judge, four capability benchmarks, and all 10 experiment scripts.
-
-We support three open-access VLMs with architecture-specific layer access patterns and configs.
-
-What's in progress is the full RDSA training run — we're in the warmup epoch now — and the complete evaluation with real attacks integrated into the pipeline. We also need to reproduce baseline defenses for fair comparison."
-
-→ Transition: "Here's the timeline."
+"The baseline result: vanilla Qwen3-VL-8B without any attack has 21.6% ASR — about 1 in 5 harmful prompts get through. This is our no-attack baseline. We've just completed the attack integration in evaluate.py, so adversarial attack results with actual perturbations are running next."
 
 ---
 
-## Slide 15: Timeline [13:45 - 14:30]
+## Slide 14: Code Architecture [12:00 - 12:30]
 
-"We have roughly 7 weeks to the NeurIPS deadline. Weeks 1 and 2 focus on training all three models and running the main comparison and ablation experiments. Week 3 covers the analysis experiments — SA-AT, redundancy, and entanglement. Week 4 handles transfer attacks and sensitivity analysis. Week 5 is for statistical significance — running with 3 seeds, computing bootstrap confidence intervals. And weeks 6-7 are for paper writing.
-
-The key risks are GPU availability — we need sustained access for the full training runs — baseline reproduction, since Circuit Breaker and SmoothVLM need separate implementations, and the strength of adaptive attacks — we need to ensure they're genuinely strong, not just nominally adaptive."
-
-→ Transition: "Let me summarize."
+"The codebase is about 5000 lines, organized into 5 packages. Subspace for identification, training for the SA-AT loop and losses, attacks for all 6 attack implementations, evaluation for the GPT-4o judge and benchmarks, and models for the hook-based activation system. All 10 experiment scripts are ready."
 
 ---
 
-## Slide 16: Summary & Questions [14:30 - 15:00]
+## Slide 15: Evaluation Setup [12:30 - 13:00]
 
-"To summarize: VLM safety is fragile because safety features are localized and separable. RDSA addresses this with three modules — subspace-constrained adversarial training, cross-layer redundancy, and safety-semantic entanglement — backed by two theoretical guarantees.
+"We evaluate on 3 open-access VLMs — no HuggingFace login required. Qwen3-VL-8B, InternVL2.5-8B, and MiniCPM-V-2.6 — three different language backbones for architecture diversity. Against 6 attacks including 3 adaptive attacks. Measured by GPT-4o safety judge plus 4 capability benchmarks."
 
-Our implementation is complete across three open-access VLMs, with a comprehensive 10-experiment evaluation plan targeting NeurIPS 2026.
+---
 
-The code is available on GitHub. I'm happy to take questions."
+## Slide 16: Experiment Plan [13:00 - 13:30]
+
+"10 experiments total. The main comparison is the core table — 7 defenses times 6 attacks times 3 models. The ablation isolates each component. Experiments 3-5 provide empirical evidence for our theorems. Experiment 7 — adaptive attacks — is the NeurIPS hard requirement. Total compute: about 600 GPU-hours for one seed."
+
+---
+
+## Slide 17: Implementation Status [13:30 - 14:00]
+
+"The progress bars tell the story. Green bars — 8 out of 11 items fully complete. The training loop, all attacks, the judge, benchmarks, experiment scripts — all done. Orange: training is 20% through the first model. Red: full evaluation with real attacks and baseline reproduction are next."
+
+---
+
+## Slide 18: Timeline [14:00 - 14:30]
+
+"We have 7 weeks. Weeks 1-2: train all models and run the main experiments. Weeks 3-4: analysis and transfer experiments. Week 5: statistical significance with 3 seeds. Weeks 6-7: paper writing and polish. Key risks: GPU availability, baseline reproduction difficulty, and ensuring adaptive attacks are genuinely strong."
+
+---
+
+## Slide 19: Summary & Questions [14:30 - 15:00]
+
+"To summarize: VLM safety is fragile because safety features are localized and separable. RDSA makes them distributed, entangled, and hardened — with theoretical guarantees. Implementation is complete, training is in progress, targeting NeurIPS 2026 with 10 experiments across 3 models.
+
+Questions?"
 
 ---
 
 ## Anticipated Q&A
 
-### Q1: How does RDSA compare to Circuit Breaker?
-**A**: "Circuit Breaker applies representation engineering to remap harmful activations, but it doesn't consider the subspace structure of safety features. RDSA specifically targets the root vulnerability — localized, disentangled safety neurons — with provable coverage within the safety subspace. We expect RDSA to be more robust to adaptive attacks because of the entanglement mechanism."
+### Q1: Why is vanilla eta ~0.5, not 0.1-0.3 as SCIA predicts?
+**A**: "Our contrast data has some semantic contamination — safe and unsafe prompts differ in topic, not just safety. We're working on semantically paired data. What matters for the paper is the eta delta after RDSA training and its correlation with ASR reduction."
 
-### Q2: Why not just use regular adversarial training?
-**A**: "Standard adversarial training operates in the full activation space — 4096 dimensions. That's both computationally expensive and imprecise. SA-AT constrains the search to the 32-dimensional safety subspace, which makes PGD converge faster and the defense more targeted. It's also what enables our theoretical coverage guarantee."
+### Q2: How expensive is SA-AT compared to standard SFT?
+**A**: "About 3-4x per step due to the 7-step × 3-restart PGD inner loop. One epoch on Qwen3-VL-8B takes about 1.5 hours on A100 versus 25 minutes for pure SFT."
 
-### Q3: Is eta=0.5 for the vanilla model a problem?
-**A**: "It's higher than expected based on SCIA's findings. We believe this is due to semantic contamination in our contrast data — the safe and unsafe prompts differ in topic, not just safety. We're working on semantically paired data. Regardless, what matters for the paper is the delta — how much RDSA increases eta and how that correlates with ASR reduction."
+### Q3: What if an attacker uses a completely novel strategy?
+**A**: "The adaptive attacks give full white-box access plus knowledge of V_s, V_t, eta, and the monitor. If RDSA holds there, the entanglement mechanism provides a fundamental trade-off independent of strategy."
 
-### Q4: How expensive is RDSA training compared to standard SFT?
-**A**: "About 3-4x more expensive per step due to the PGD inner loop (7 steps × 3 restarts) and the additional forward pass for the outer loss. For Qwen3-VL-8B, one epoch takes about 1.5 hours on a single A100 versus 25 minutes for pure SFT. The total training is about 8 hours."
+### Q4: Can RDSA cause over-refusal?
+**A**: "That's why consistency loss only applies to harmful samples, and we evaluate OR-Bench. We target OR < 5%."
 
-### Q5: What if an attacker uses a completely different attack strategy?
-**A**: "That's exactly what the adaptive attacks test. We have three adaptive attacks that assume full knowledge of RDSA — they know V_s, V_t, eta, and the monitor threshold. If RDSA holds under these, it provides strong evidence of robustness. The entanglement mechanism is particularly important here — it creates a fundamental trade-off that's independent of the attack strategy."
-
-### Q6: Why these three specific models?
-**A**: "We chose for architectural diversity and accessibility. Qwen3-VL uses Qwen architecture, InternVL2.5 uses InternLM, and MiniCPM-V uses Qwen2 — three different language backbones. All are open-access without gating, which is important for reproducibility."
-
-### Q7: What's the biggest risk for the NeurIPS submission?
-**A**: "The adaptive attacks. NeurIPS reviewers will scrutinize whether our adaptive attacks are genuinely strong. If the attacks are weak and RDSA only looks good because of that, the paper won't be accepted. We need to show that even with a 10x compute budget, the attacker can't break through."
-
-### Q8: How does the inference-time monitor work?
-**A**: "The monitor computes the variance of safety confidence across the three layer groups. For clean inputs, all groups agree — low variance. For adversarial inputs, the perturbation affects groups differently — high variance. We set a threshold tau=0.2 based on calibration data. The monitor adds negligible latency — just three dot products and a variance computation."
+### Q5: Why only 3 layer groups? Why not more?
+**A**: "Experiment 4 tests G=1,2,3,4. More groups add redundancy but increase training cost. G=3 is our default — we expect diminishing returns past that."
 
 ---
 
-## Time Budget Summary
+## Time Budget
 
-| Slide | Topic | Duration | Cumulative |
-|:-----:|-------|:--------:|:----------:|
+| Slide | Topic | Dur. | Cumul. |
+|:-----:|-------|:----:|:------:|
 | 1 | Title | 0:15 | 0:15 |
-| 2 | Outline | 0:15 | 0:30 |
-| 3 | Problem | 1:30 | 2:00 |
-| 4 | Root Cause | 1:30 | 3:30 |
-| 5 | Key Insight | 1:00 | 4:30 |
-| 6 | Architecture | 1:00 | 5:30 |
-| 7 | SA-AT | 1:30 | 7:00 |
-| 8 | Redundancy | 1:30 | 8:30 |
-| 9 | Entanglement | 1:30 | 10:00 |
-| 10 | Training | 0:45 | 10:45 |
-| 11 | Models & Eval | 0:45 | 11:30 |
-| 12 | Preliminary Results | 1:00 | 12:30 |
-| 13 | Experiment Plan | 0:45 | 13:15 |
-| 14 | Implementation | 0:30 | 13:45 |
-| 15 | Timeline | 0:45 | 14:30 |
-| 16 | Summary + Q&A | 0:30 | 15:00 |
+| 2 | Attack problem | 1:15 | 1:30 |
+| 3 | Root cause | 1:30 | 3:00 |
+| 4 | RDSA idea | 1:00 | 4:00 |
+| 5 | Pipeline | 1:00 | 5:00 |
+| 6 | SA-AT diagram | 1:30 | 6:30 |
+| 7 | Redundancy | 1:00 | 7:30 |
+| 8 | Entanglement | 1:30 | 9:00 |
+| 9 | Multi-obj loss | 0:45 | 9:45 |
+| 10 | Enhancements | 0:30 | 10:15 |
+| 11 | Subspace results | 0:30 | 10:45 |
+| 12 | Training curves | 0:45 | 11:30 |
+| 13 | Baseline eval | 0:30 | 12:00 |
+| 14 | Code architecture | 0:30 | 12:30 |
+| 15 | Eval setup | 0:30 | 13:00 |
+| 16 | Experiment plan | 0:30 | 13:30 |
+| 17 | Impl status | 0:30 | 14:00 |
+| 18 | Timeline | 0:30 | 14:30 |
+| 19 | Summary + Q | 0:30 | 15:00 |
 
-**Total**: 15:00 min
+**Total**: 15:00

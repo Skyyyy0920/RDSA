@@ -8,6 +8,8 @@
 \definecolor{lightbg}{HTML}{F8F9FA}
 \definecolor{dangerred}{HTML}{DC2626}
 \definecolor{safegreen}{HTML}{059669}
+\definecolor{orange}{HTML}{EA580C}
+\definecolor{gray}{HTML}{6B7280}
 
 % ── Clean theme ──
 \usetheme{default}
@@ -27,11 +29,10 @@
 
 % ── Packages ──
 \usepackage{graphicx,amsmath,amssymb,booktabs,tikz,pgfplots}
-\usepackage{fontenc}
-\usetikzlibrary{arrows.meta,positioning,shapes,calc,decorations.pathreplacing}
+\usepackage[T1]{fontenc}
+\usetikzlibrary{arrows.meta,positioning,shapes,calc,decorations.pathreplacing,fit,backgrounds,patterns}
 \pgfplotsset{compat=1.18}
 
-% ── Metadata ──
 \title{RDSA: Resilient Distributed\\Safety Architecture}
 \subtitle{Defending VLMs Against Adversarial Safety Attacks\\via Distributed, Entangled Safety Representations}
 \author{Tianhao}
@@ -40,497 +41,785 @@
 
 \begin{document}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 1: Title
-% ═══════════════════════════════════════════════════════════════
+% ═══ Slide 1: Title ═══
 \begin{frame}[plain]
 \titlepage
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 2: Outline
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{Outline}
-\begin{enumerate}
-  \item \textbf{Problem}: VLM safety is fragile --- one attack breaks it
-  \item \textbf{Root cause}: Safety features are localized \& separable
-  \item \textbf{Our approach}: RDSA --- distribute, entangle, harden
-  \item \textbf{Technical details}: Three defense modules + theory
-  \item \textbf{Progress}: Implementation \& preliminary results
-  \item \textbf{Timeline}: Path to NeurIPS 2026
-\end{enumerate}
-\end{frame}
+% ═══ Slide 2: The Attack Problem (Full-page figure) ═══
+\begin{frame}{The Threat: One Image Breaks VLM Safety}
+\centering
+\begin{tikzpicture}[scale=0.78, transform shape,
+  block/.style={draw,rounded corners=4pt,minimum height=1.1cm,align=center,font=\small},
+  arr/.style={->,>=Stealth,thick}
+]
+  % Left: normal flow
+  \node[font=\footnotesize\bfseries,primary] at (-5.5,3.2) {Normal Operation};
+  \node[block,fill=safegreen!10,minimum width=2.2cm] (user1) at (-7,2) {User};
+  \node[block,fill=lightbg,minimum width=2.2cm] (vlm1) at (-4,2) {\textbf{VLM}\\(aligned)};
+  \node[block,fill=safegreen!15,minimum width=2.6cm] (resp1) at (-0.5,2) {\textcolor{safegreen}{``I can't help}\\[-2pt]\textcolor{safegreen}{with that.''}};
+  \draw[arr] (user1) -- node[above,font=\scriptsize] {``How to hack...''} (vlm1);
+  \draw[arr,safegreen] (vlm1) -- node[above,font=\scriptsize] {refuses} (resp1);
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 3: The Problem
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{VLM Safety Is Surprisingly Fragile}
-\begin{columns}[T]
-\begin{column}{0.55\textwidth}
-\begin{itemize}
-  \item VLMs (GPT-4o, Qwen-VL, Gemma) have safety alignment
-  \item \alert{One adversarial image can bypass all safety guardrails}
-  \item SCIA attack (ICML 2026): \textbf{>80\% ASR} on aligned models
-  \item Safety fine-tuning, RLHF --- all broken by visual attacks
-\end{itemize}
-\vspace{1em}
-\textbf{Why?} $\rightarrow$ Next slide
-\end{column}
-\begin{column}{0.42\textwidth}
-\begin{tikzpicture}[scale=0.7]
-  % VLM box
-  \node[draw,rounded corners,fill=lightbg,minimum width=4cm,minimum height=2cm] (vlm) at (0,0) {\textbf{VLM}};
-  % Safe input
-  \node[left=1.5cm of vlm,align=center,font=\small] (safe) {Safe\\prompt};
-  \draw[->,thick,safegreen] (safe) -- (vlm) node[midway,above,font=\scriptsize] {text};
+  % Right: attack flow
+  \node[font=\footnotesize\bfseries,dangerred] at (-5.5,0.2) {Under SCIA Attack};
+  \node[block,fill=dangerred!8,minimum width=2.2cm] (user2) at (-7,-1) {Attacker};
+  \node[block,fill=lightbg,minimum width=2.2cm] (vlm2) at (-4,-1) {\textbf{VLM}\\(aligned)};
+  \node[block,fill=dangerred!15,minimum width=2.6cm] (resp2) at (-0.5,-1) {\textcolor{dangerred}{``Sure, here's}\\[-2pt]\textcolor{dangerred}{how to...''}};
+
   % Adversarial image
-  \node[above left=0.8cm and 1.5cm of vlm,align=center,font=\small,text=dangerred] (adv) {Adversarial\\image};
-  \draw[->,thick,dangerred] (adv) -- (vlm) node[midway,right,font=\scriptsize] {visual};
-  % Output
-  \node[right=1.5cm of vlm,align=center,font=\small,text=dangerred] (out) {Harmful\\response};
-  \draw[->,thick,dangerred] (vlm) -- (out);
-  % Cross on safety
-  \node[below=0.3cm of vlm,font=\scriptsize,text=dangerred] {Safety bypassed!};
+  \node[block,fill=dangerred!10,minimum width=1.8cm,draw=dangerred] (adv) at (-5.5,-2.8) {\textcolor{dangerred}{Adversarial}\\[-2pt]\textcolor{dangerred}{Image}};
+
+  \draw[arr] (user2) -- node[above,font=\scriptsize] {same text} (vlm2);
+  \draw[arr,dangerred] (adv) -- (vlm2);
+  \draw[arr,dangerred] (vlm2) -- node[above,font=\scriptsize] {complies!} (resp2);
+
+  % Stats box
+  \node[draw=dangerred,rounded corners,fill=dangerred!5,font=\small,align=center,
+        minimum width=3.8cm] at (3.2,0.5) {
+    \textbf{SCIA (ICML 2026)}\\[3pt]
+    ASR $>$ \textbf{80\%} on aligned VLMs\\[2pt]
+    \textcolor{gray}{\scriptsize Safety fine-tuning: broken}\\[-1pt]
+    \textcolor{gray}{\scriptsize RLHF: broken}\\[-1pt]
+    \textcolor{gray}{\scriptsize Constitutional AI: broken}
+  };
+
+  % Separator
+  \draw[dashed,gray,thick] (-8.5,1) -- (5,1);
 \end{tikzpicture}
-\end{column}
-\end{columns}
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 4: Root Cause (SCIA Finding)
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{Root Cause: Localized \& Separable Safety Features}
-\begin{columns}[T]
-\begin{column}{0.55\textwidth}
-SCIA's key discovery:
-\begin{itemize}
-  \item Safety behavior depends on \textbf{$\sim$0.1--0.5\%} of neurons
-  \item These neurons are \alert{disentangled from semantics}
-  \item Attacker can suppress safety \textbf{without hurting capability}
-\end{itemize}
-\vspace{0.8em}
-\textcolor{accent}{\textbf{Analogy:}} Safety is a single fuse ---\\cut it, lights stay on, alarm goes off
-\end{column}
-\begin{column}{0.42\textwidth}
-\begin{tikzpicture}[scale=0.65]
-  % Grid of neurons
-  \foreach \x in {0,...,7} {
-    \foreach \y in {0,...,7} {
-      \fill[lightbg] (\x*0.5, \y*0.5) circle (0.15);
+% ═══ Slide 3: Root Cause (Full-page figure) ═══
+\begin{frame}{Root Cause: Safety Is Localized \& Separable}
+\centering
+\begin{tikzpicture}[scale=0.78, transform shape]
+  % ── Left: Vanilla model representation ──
+  \node[font=\small\bfseries,primary] at (-4.5,3.5) {Inside a Vanilla VLM (Layer 18)};
+
+  % Neuron grid
+  \foreach \x in {0,...,15} {
+    \foreach \y in {0,...,5} {
+      \fill[accent!12] (-7.5+\x*0.38, \y*0.38) circle (0.12);
     }
   }
-  % Safety neurons (few, clustered)
-  \fill[dangerred] (1.5,2.5) circle (0.18);
-  \fill[dangerred] (2.0,2.5) circle (0.18);
-  \fill[dangerred] (1.5,3.0) circle (0.18);
-  \fill[dangerred] (2.0,3.0) circle (0.18);
-  % Labels
-  \node[font=\scriptsize,below] at (2,-0.3) {4096 neurons per layer};
-  \node[font=\scriptsize,dangerred,right] at (3.0,2.75) {$\leftarrow$ Safety neurons};
-  \node[font=\scriptsize,right] at (3.0,2.25) {(only $\sim$0.5\%)};
-  % Strike through
-  \draw[dangerred,very thick] (1.2,2.2) -- (2.3,3.3);
-  \draw[dangerred,very thick] (2.3,2.2) -- (1.2,3.3);
+  % Safety neurons (few, red)
+  \foreach \x/\y in {3/3, 3/4, 4/3, 4/4, 5/3} {
+    \fill[dangerred] (-7.5+\x*0.38, \y*0.38) circle (0.14);
+  }
+
+  \node[font=\scriptsize,dangerred,right] at (-3.5,1.5) {$\leftarrow$ Safety neurons};
+  \node[font=\scriptsize,right] at (-3.5,1.1) {\textbf{5 out of 4096} ($\sim$0.1\%)};
+  \node[font=\scriptsize,accent,right] at (-3.5,0.5) {$\leftarrow$ 4091 semantic neurons};
+
+  % ── Right: Subspace view ──
+  \node[font=\small\bfseries,primary] at (3.5,3.5) {Subspace Perspective};
+
+  \begin{scope}[shift={(3.5,1.3)}]
+    % Axes
+    \draw[->,thick,gray] (0,0) -- (3,0) node[right,font=\scriptsize] {Semantic $V_t$};
+    \draw[->,thick,gray] (0,0) -- (0,2.2) node[above,font=\scriptsize] {Safety $V_s$};
+
+    % Semantic blob (wide)
+    \fill[accent!15] (0.3,-0.2) ellipse (2.3 and 0.4);
+    \node[font=\scriptsize,accent] at (1.5,-0.7) {256-dim semantic};
+
+    % Safety blob (narrow, orthogonal)
+    \fill[dangerred!15] (-0.2,0.3) ellipse (0.3 and 1.5);
+    \node[font=\scriptsize,dangerred,rotate=90] at (-0.7,1.2) {32-dim safety};
+
+    % Key insight
+    \draw[dangerred,very thick,<->] (0.5,0.8) -- (0.5,1.8);
+    \node[font=\scriptsize\bfseries,dangerred,right] at (0.6,1.3) {Orthogonal!};
+    \node[font=\scriptsize,right] at (0.6,0.9) {$\eta \approx 0.2$};
+  \end{scope}
+
+  % Bottom insight box
+  \node[draw=dangerred,rounded corners,fill=dangerred!5,font=\small,align=center,
+        minimum width=14cm] at (0,-1.2) {
+    \textbf{Key vulnerability}: Attacker can suppress the 32 safety dimensions
+    \textbf{without affecting} the 256 semantic dimensions
+  };
 \end{tikzpicture}
-\end{column}
-\end{columns}
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 5: Our Key Insight
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{Key Insight: Distribute, Entangle, Harden}
+% ═══ Slide 4: RDSA Key Idea (Full-page figure) ═══
+\begin{frame}{RDSA: Make Safety Impossible to Remove}
 \centering
-\vspace{0.5em}
-{\Large\textcolor{primary}{\textbf{Make safety features impossible to remove\\without destroying the model}}}
-\vspace{1.5em}
+\begin{tikzpicture}[scale=0.75, transform shape]
+  % Three pillars
+  \foreach \i/\title/\subtitle/\col/\icon in {
+    0/{Distribute}/{Multi-layer redundancy}/primary/{G=3 groups},
+    1/{Entangle}/{Safety $\leftrightarrow$ Semantics}/accent/{$\eta \to 1$},
+    2/{Harden}/{Subspace Adv.\ Training}/safegreen/{SA-AT}
+  } {
+    \pgfmathsetmacro{\xpos}{-5 + \i*5}
+    % Pillar
+    \node[draw=\col,rounded corners=6pt,fill=\col!8,minimum width=4cm,
+          minimum height=3.5cm,align=center] (p\i) at (\xpos,1) {};
+    % Title
+    \node[font=\large\bfseries,\col] at (\xpos,2.5) {\title};
+    % Subtitle
+    \node[font=\small,align=center] at (\xpos,1.5) {\subtitle};
+    % Icon label
+    \node[font=\footnotesize\bfseries,\col,draw=\col,rounded corners,
+          fill=\col!15,inner sep=3pt] at (\xpos,0.3) {\icon};
+  }
 
-\begin{columns}[c]
-\begin{column}{0.32\textwidth}
-\centering
-\begin{tikzpicture}
-  \node[draw,circle,fill=primary!15,minimum size=1.5cm,font=\small,align=center] {Multi-layer\\redundancy};
-\end{tikzpicture}\\[0.5em]
-{\small\textbf{Distribute} safety\\across layer groups}
-\end{column}
-\begin{column}{0.32\textwidth}
-\centering
-\begin{tikzpicture}
-  \node[draw,circle,fill=accent!15,minimum size=1.5cm,font=\small,align=center] {Semantic\\entangle};
-\end{tikzpicture}\\[0.5em]
-{\small\textbf{Entangle} safety\\with semantics}
-\end{column}
-\begin{column}{0.32\textwidth}
-\centering
-\begin{tikzpicture}
-  \node[draw,circle,fill=safegreen!15,minimum size=1.5cm,font=\small,align=center] {Subspace\\AT};
-\end{tikzpicture}\\[0.5em]
-{\small\textbf{Harden} via\\adversarial training}
-\end{column}
-\end{columns}
+  % Arrows between pillars
+  \draw[thick,->,>=Stealth,primary!60] (p0.east) -- (p1.west);
+  \draw[thick,->,>=Stealth,accent!60] (p1.east) -- (p2.west);
+
+  % Before/After comparison at bottom
+  \node[font=\small\bfseries] at (-5,-1.5) {Before (Vanilla)};
+  \node[font=\small\bfseries] at (5,-1.5) {After (RDSA)};
+
+  % Before: single point of failure
+  \begin{scope}[shift={(-5,-3)}]
+    \fill[dangerred!20] (0,0) circle (0.8);
+    \node[font=\scriptsize,dangerred] at (0,0) {1 fuse};
+    \draw[dangerred,very thick] (-0.4,-0.4) -- (0.4,0.4);
+    \draw[dangerred,very thick] (0.4,-0.4) -- (-0.4,0.4);
+  \end{scope}
+
+  % Arrow
+  \draw[very thick,->,>=Stealth,gray] (-2.5,-3) -- (2.5,-3)
+    node[midway,above,font=\scriptsize] {RDSA Training};
+
+  % After: distributed, entangled
+  \begin{scope}[shift={(5,-3)}]
+    \fill[safegreen!20] (-0.8,0) circle (0.5);
+    \fill[safegreen!20] (0,0) circle (0.5);
+    \fill[safegreen!20] (0.8,0) circle (0.5);
+    \fill[accent!20] (-0.4,0) circle (0.3);
+    \fill[accent!20] (0.4,0) circle (0.3);
+    \node[font=\scriptsize,safegreen] at (0,0.7) {Distributed + Entangled};
+  \end{scope}
+\end{tikzpicture}
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 6: RDSA Architecture Overview
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{RDSA: Three Defense Modules}
-\begin{tikzpicture}[
-  box/.style={draw,rounded corners,minimum width=3.2cm,minimum height=1.2cm,align=center,font=\small},
-  arrow/.style={->,>=stealth,thick},
-  scale=0.85, transform shape
+% ═══ Slide 5: RDSA Pipeline (Full-page architecture) ═══
+\begin{frame}{RDSA Training Pipeline}
+\centering
+\begin{tikzpicture}[scale=0.72, transform shape,
+  step/.style={draw,rounded corners=5pt,minimum height=1.6cm,minimum width=3.5cm,align=center,font=\small},
+  arr/.style={->,>=Stealth,thick,gray},
+  detail/.style={font=\scriptsize,align=center}
 ]
-  % Pipeline
-  \node[box,fill=primary!10] (id) at (0,0) {\textbf{Step 1: Identify}\\$V_s, V_t$ via SVD/PCA};
-  \node[box,fill=accent!10] (train) at (5,0) {\textbf{Step 2: Train}\\SA-AT + Entangle};
-  \node[box,fill=safegreen!10] (monitor) at (10,0) {\textbf{Step 3: Monitor}\\Inference anomaly};
-
-  \draw[arrow] (id) -- (train);
-  \draw[arrow] (train) -- (monitor);
-
-  % Details below
-  \node[font=\scriptsize,text=primary,below=0.3cm of id,align=center] {
+  % Step 1
+  \node[step,fill=primary!10,draw=primary] (s1) at (0,0) {\textbf{Step 1: Identify}\\$V_s$, $V_t$ per group};
+  \node[detail,below=0.2cm of s1,primary] {
     SVD on $\Delta H = H_\text{unsafe} - H_\text{safe}$\\
-    $\rightarrow$ Safety subspace $V_s$ [d, 32]
-  };
-  \node[font=\scriptsize,text=accent,below=0.3cm of train,align=center] {
-    $\mathcal{L} = \mathcal{L}_\text{SFT} + \alpha_1 \mathcal{L}_\text{SA-AT} + \alpha_2 \mathcal{L}_\text{consist} + \alpha_3 \mathcal{L}_\text{entangle}$\\
-    LoRA fine-tuning (attention + MLP)
-  };
-  \node[font=\scriptsize,text=safegreen,below=0.3cm of monitor,align=center] {
-    Cross-layer variance detection\\
-    $\text{Var}_k[\sigma(w_k^T V_s^T h_k)] > \tau$
+    PCA on $H_\text{normal}$\\
+    $V_s$: [4096, 32] \quad $V_t$: [4096, 256]
   };
 
-  % Theorem annotations
-  \node[font=\scriptsize,primary,above=0.15cm of train] {\textbf{Theorem 1: Coverage}};
-  \node[font=\scriptsize,safegreen,above=0.15cm of monitor] {\textbf{Theorem 2: Redundancy}};
+  % Step 2
+  \node[step,fill=accent!10,draw=accent] (s2) at (5.5,0) {\textbf{Step 2: Train}\\Multi-objective SA-AT};
+  \node[detail,below=0.2cm of s2,accent] {
+    $\mathcal{L} = \mathcal{L}_\text{SFT} + \alpha_1 \mathcal{L}_\text{SA-AT}$\\
+    $+ \alpha_2 \mathcal{L}_\text{consist} + \alpha_3 \mathcal{L}_\text{entangle}$\\
+    LoRA (attn + MLP), 5 epochs
+  };
+
+  % Step 3
+  \node[step,fill=safegreen!10,draw=safegreen] (s3) at (11,0) {\textbf{Step 3: Monitor}\\Inference-time};
+  \node[detail,below=0.2cm of s3,safegreen] {
+    Cross-layer variance\\
+    $\text{LCIV} = \text{Var}_k[\sigma(w_k^T V_s^T h_k)]$\\
+    Threshold $\tau = 0.2$
+  };
+
+  \draw[arr,primary] (s1) -- (s2);
+  \draw[arr,accent] (s2) -- (s3);
+
+  % Data flow on top
+  \node[draw,rounded corners,fill=lightbg,font=\scriptsize,align=center] (data) at (0,2.5) {Safe/Unsafe\\Contrast Data};
+  \node[draw,rounded corners,fill=lightbg,font=\scriptsize,align=center] (model) at (5.5,2.5) {VLM + LoRA\\(Qwen3/InternVL/MiniCPM)};
+  \node[draw,rounded corners,fill=lightbg,font=\scriptsize,align=center] (deploy) at (11,2.5) {Defended VLM\\+ Monitor};
+
+  \draw[arr] (data) -- (s1);
+  \draw[arr] (model) -- (s2);
+  \draw[arr] (s3) -- (deploy);
+
+  % Theorem labels
+  \node[font=\scriptsize\bfseries,primary,above=0.1cm of s1] {Theorem 1};
+  \node[font=\scriptsize\bfseries,accent,above=0.1cm of s2] {Coverage};
+  \node[font=\scriptsize\bfseries,safegreen,above=0.1cm of s3] {Theorem 2};
 \end{tikzpicture}
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 7: Module 1 — SA-AT (Theorem 1)
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{Module 1: Subspace-Constrained Adversarial Training}
-\textbf{Theorem 1} (SA-AT Coverage Guarantee):
-\vspace{0.3em}
-\begin{itemize}
-  \item \textbf{Inner loop}: PGD finds worst-case $\delta^*$ in $V_s$ subspace
-  $$\delta^* = \arg\max_{\|\delta\| \leq \varepsilon} \mathcal{L}_\text{CE}\big(f(h + V_s\delta),\; y_\text{refusal}\big)$$
-  \item \textbf{Outer loop}: Train model to refuse under $\delta^*$
-  \item Search space is only \textbf{$d_s$=32 dimensions} (not 4096)
-  \item \textcolor{accent}{Random restarts} (3$\times$) for stronger adversarial search
-  \item \textcolor{accent}{Relative $\varepsilon$}: scaled by activation norm per layer
-\end{itemize}
+% ═══ Slide 6: SA-AT Inner/Outer Loop Diagram ═══
+\begin{frame}{Module 1: SA-AT --- Inner \& Outer Loop}
+\centering
+\begin{tikzpicture}[scale=0.72, transform shape,
+  box/.style={draw,rounded corners=3pt,minimum height=0.9cm,align=center,font=\small},
+  arr/.style={->,>=Stealth,thick}
+]
+  % Inner loop (top)
+  \node[font=\small\bfseries,dangerred] at (-5.5,3.5) {Inner Loop (find $\delta^*$)};
+  \node[box,fill=dangerred!5,draw=dangerred,minimum width=2.2cm] (init) at (-6,2.3) {Init $\delta=0$\\or random};
+  \node[box,fill=dangerred!5,draw=dangerred,minimum width=2.5cm] (pgd) at (-2.2,2.3) {PGD step:\\$\delta \mathrel{+}= \alpha \cdot \text{sign}(\nabla_\delta \mathcal{L})$};
+  \node[box,fill=dangerred!5,draw=dangerred,minimum width=2.2cm] (clip) at (1.8,2.3) {Clip:\\$\|\delta\|_\infty \leq \varepsilon$};
+  \node[box,fill=dangerred!10,draw=dangerred,minimum width=2.2cm] (best) at (5.5,2.3) {$\delta^* = \arg\max$\\best restart};
+
+  \draw[arr,dangerred] (init) -- (pgd);
+  \draw[arr,dangerred] (pgd) -- (clip);
+  \draw[arr,dangerred] (clip) -- (best);
+  \draw[arr,dangerred,dashed] (clip.north) .. controls +(0,0.7) and +(0,0.7) .. (pgd.north) node[midway,above,font=\scriptsize] {7 steps $\times$ 3 restarts};
+
+  % Key: only in V_s subspace
+  \node[draw=orange,fill=orange!8,rounded corners,font=\scriptsize,align=center] at (-6,0.8) {
+    Search in $V_s$ only\\(32-dim, not 4096!)
+  };
+
+  % Outer loop (bottom)
+  \node[font=\small\bfseries,safegreen] at (-5.5,-0.2) {Outer Loop (train model)};
+  \node[box,fill=safegreen!5,draw=safegreen,minimum width=2.5cm] (fwd) at (-5,-1.4) {Forward pass\\$h + V_s \delta^*$};
+  \node[box,fill=safegreen!5,draw=safegreen,minimum width=2.5cm] (loss) at (-0.5,-1.4) {$\mathcal{L}_\text{SA-AT} =$\\$\mathcal{L}_\text{CE}(f(h+V_s\delta^*), y_\text{refuse})$};
+  \node[box,fill=safegreen!5,draw=safegreen,minimum width=2.5cm] (back) at (4,-1.4) {Backprop to\\LoRA params};
+
+  \draw[arr,safegreen] (best.south) -- ++(0,-0.5) -| (fwd.north);
+  \draw[arr,safegreen] (fwd) -- (loss);
+  \draw[arr,safegreen] (loss) -- (back);
+
+  % Note: delta detached, h has grad
+  \node[draw=accent,fill=accent!5,rounded corners,font=\scriptsize,align=center,
+        minimum width=3.2cm] at (4,-2.8) {
+    $\delta^*$ frozen (detached)\\
+    $h$ retains gradient $\to$ LoRA
+  };
+
+  % Relative epsilon
+  \node[draw=primary,fill=primary!5,rounded corners,font=\scriptsize,align=center] at (-0.5,-2.8) {
+    $\varepsilon = 0.05 \times \|h\|_\text{mean}$\\
+    (relative to activation norm)
+  };
+\end{tikzpicture}
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 8: Module 2 — Cross-Layer Redundancy (Theorem 2)
-% ═══════════════════════════════════════════════════════════════
+% ═══ Slide 7: Cross-Layer Redundancy (Full diagram) ═══
 \begin{frame}{Module 2: Cross-Layer Safety Redundancy}
-\textbf{Theorem 2}: Attack cost amplification via $G$ independent layer groups
-
-\vspace{0.5em}
-\begin{columns}[T]
+\begin{columns}[c]
 \begin{column}{0.52\textwidth}
-\begin{itemize}
-  \item Safety distributed across \textbf{$G$=3 groups}
-  \item Attack cost: $O(\varepsilon_1^*) \rightarrow O\!\left(\sqrt{\textstyle\sum_k (\varepsilon_k^*)^2}\right)$
-  \item Attacker must fool \textbf{all groups simultaneously}
-  \item Non-aligned gradients across groups
-\end{itemize}
+\centering
+\begin{tikzpicture}[scale=0.6, transform shape]
+  % Transformer layers stack
+  \foreach \i/\label/\col in {
+    0/{L0--L7}/{lightbg},
+    1/{Group 1: L8--12}/{primary!20},
+    2/{L13--15}/{lightbg},
+    3/{Group 2: L16--20}/{accent!20},
+    4/{L21--23}/{lightbg},
+    5/{Group 3: L24--28}/{safegreen!20},
+    6/{L29--32}/{lightbg}
+  } {
+    \pgfmathsetmacro{\ypos}{\i*1.0}
+    \node[draw,fill=\col,minimum width=5cm,minimum height=0.7cm,font=\scriptsize] (layer\i) at (0,\ypos) {\label};
+  }
+
+  % V_s labels
+  \node[font=\scriptsize\bfseries,primary,right] at (2.8,1) {$V_s^{(1)}$};
+  \node[font=\scriptsize\bfseries,accent,right] at (2.8,3) {$V_s^{(2)}$};
+  \node[font=\scriptsize\bfseries,safegreen,right] at (2.8,5) {$V_s^{(3)}$};
+
+  % Brace
+  \draw[decorate,decoration={brace,amplitude=6pt},thick,dangerred]
+    (3.5,0.6) -- (3.5,5.4) node[midway,right=8pt,font=\scriptsize,dangerred,align=left] {Attacker must\\break \textbf{all 3}};
+
+  % Input arrow
+  \draw[->,>=Stealth,thick] (0,-0.8) -- (0,-0.2) node[midway,left,font=\scriptsize] {Input};
+  \draw[->,>=Stealth,thick] (0,6.2) -- (0,6.8) node[midway,left,font=\scriptsize] {Output};
+\end{tikzpicture}
 \end{column}
 \begin{column}{0.45\textwidth}
-\begin{tikzpicture}[scale=0.6, transform shape]
-  % Layer stack
-  \foreach \i/\label in {0/L1--L7, 1/L8--L12, 2/L13--L15, 3/L16--L20, 4/L21--L23, 5/L24--L28, 6/L29--L32} {
-    \pgfmathsetmacro{\ypos}{\i*0.8}
-    \ifnum\i=1
-      \node[draw,fill=primary!20,minimum width=4cm,minimum height=0.6cm,font=\scriptsize] at (0,\ypos) {Group 1: \label};
-    \else\ifnum\i=3
-      \node[draw,fill=accent!20,minimum width=4cm,minimum height=0.6cm,font=\scriptsize] at (0,\ypos) {Group 2: \label};
-    \else\ifnum\i=5
-      \node[draw,fill=safegreen!20,minimum width=4cm,minimum height=0.6cm,font=\scriptsize] at (0,\ypos) {Group 3: \label};
-    \else
-      \node[draw,fill=lightbg,minimum width=4cm,minimum height=0.6cm,font=\scriptsize] at (0,\ypos) {\label};
-    \fi\fi\fi
-  }
-  % Brace
-  \draw[decorate,decoration={brace,amplitude=5pt},thick,primary] (2.3,0.5) -- (2.3,4.3) node[midway,right=6pt,font=\scriptsize,align=left] {Must attack\\all 3 groups};
-\end{tikzpicture}
+\textbf{Theorem 2}: Attack cost scales as
+$$O(\varepsilon_1^*) \;\to\; O\!\left(\sqrt{\textstyle\sum_k (\varepsilon_k^*)^2}\right)$$
+
+\vspace{0.3em}
+\begin{itemize}
+  \item Each group has \textbf{independent $V_s^{(k)}$}
+  \item Gradients \textbf{non-aligned} across groups
+  \item ConsistencyLoss enforces agreement
+  \item[$\to$] No single perturbation defeats all groups
+\end{itemize}
 \end{column}
 \end{columns}
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 9: Module 3 — Entanglement
-% ═══════════════════════════════════════════════════════════════
+% ═══ Slide 8: Entanglement (Full diagram) ═══
 \begin{frame}{Module 3: Safety-Semantic Entanglement}
-\begin{columns}[T]
-\begin{column}{0.55\textwidth}
-\textbf{Goal}: Make safety inseparable from semantics
-\vspace{0.5em}
-\begin{itemize}
-  \item Entanglement degree: $\eta = \frac{1}{d_s}\sum_i \max_j |v_s^{(i)\top} v_t^{(j)}|$
-  \item $\eta \approx 0$ $\rightarrow$ safety removable (vulnerable)
-  \item $\eta \approx 1$ $\rightarrow$ safety = semantics (robust)
-  \item \textbf{New}: $\mathcal{L}_\text{entangle} = 1 - \eta$
-  \item Directly optimized via gradient descent
-\end{itemize}
-\vspace{0.5em}
-\textcolor{accent}{Attacker's dilemma}: removing safety\\destroys model capability
-\end{column}
-\begin{column}{0.42\textwidth}
+\centering
+\begin{tikzpicture}[scale=0.78, transform shape]
+  % Left: Low eta (vanilla)
+  \begin{scope}[shift={(-5,0)}]
+    \node[font=\small\bfseries,dangerred] at (0,3) {Vanilla: $\eta \approx 0.2$};
+    \draw[->,thick,gray] (0,0) -- (3.5,0) node[right,font=\scriptsize] {Semantic};
+    \draw[->,thick,gray] (0,0) -- (0,2.8) node[above,font=\scriptsize] {Safety};
+
+    % Orthogonal ellipses
+    \fill[accent!15] (1.5,0) ellipse (1.5 and 0.25);
+    \fill[dangerred!15] (0,1.2) ellipse (0.25 and 1.0);
+    \node[font=\scriptsize,accent] at (1.5,-0.5) {$V_t$ (semantic)};
+    \node[font=\scriptsize,dangerred,rotate=90] at (-0.6,1.2) {$V_s$ (safety)};
+
+    % Scissors
+    \node[font=\large,dangerred] at (0.5,1.2) {\ding{34}};
+    \node[font=\scriptsize,dangerred,align=center] at (2.3,2) {Can cut safety\\without damage};
+  \end{scope}
+
+  % Arrow
+  \draw[very thick,->,>=Stealth,primary] (-1.2,1.2) -- (1.2,1.2)
+    node[midway,above,font=\scriptsize\bfseries] {RDSA};
+  \node[font=\scriptsize,accent,align=center] at (0,0.5) {$\mathcal{L}_\text{entangle} = 1 - \eta$};
+
+  % Right: High eta (RDSA)
+  \begin{scope}[shift={(5,0)}]
+    \node[font=\small\bfseries,safegreen] at (0,3) {RDSA: $\eta \approx 0.8$};
+    \draw[->,thick,gray] (0,0) -- (3.5,0) node[right,font=\scriptsize] {Semantic};
+    \draw[->,thick,gray] (0,0) -- (0,2.8) node[above,font=\scriptsize] {Safety};
+
+    % Overlapping ellipses (rotated, aligned)
+    \fill[accent!15,rotate=30] (1.0,0.3) ellipse (1.5 and 0.3);
+    \fill[dangerred!15,rotate=35] (0.8,0.1) ellipse (1.3 and 0.25);
+
+    \node[font=\scriptsize,safegreen,align=center] at (2.3,2) {Removing safety\\destroys semantics};
+    \node[font=\scriptsize,accent] at (2.0,-0.5) {$V_t \approx V_s$};
+  \end{scope}
+\end{tikzpicture}
+
+\vspace{0.3em}
+\begin{tikzpicture}
+  \node[draw=primary,rounded corners,fill=primary!5,font=\small,align=center,
+        minimum width=13cm] {
+    Entanglement degree: $\eta = \frac{1}{d_s}\sum_i \max_j |v_s^{(i)\top} v_t^{(j)}|$
+    \qquad Directly optimized: $\nabla_\theta \mathcal{L}_\text{entangle} \to$ LoRA parameters
+  };
+\end{tikzpicture}
+\end{frame}
+
+% ═══ Slide 9: Multi-Objective Loss (Diagram) ═══
+\begin{frame}{Training: Multi-Objective Optimization}
+\centering
+\begin{tikzpicture}[scale=0.75, transform shape,
+  lbox/.style={draw,rounded corners=4pt,minimum height=1.1cm,minimum width=3.2cm,align=center,font=\small},
+  arr/.style={->,>=Stealth,thick}
+]
+  % Total loss at top
+  \node[lbox,fill=primary!12,draw=primary,minimum width=10cm,font=\normalsize] (total) at (0,3) {
+    $\mathcal{L}_\text{total} = \mathcal{L}_\text{SFT} + 0.3\,\mathcal{L}_\text{SA-AT} + 0.05\,\mathcal{L}_\text{consist} + 0.1\,\mathcal{L}_\text{entangle}$
+  };
+
+  % Four loss components
+  \node[lbox,fill=lightbg] (sft) at (-5.5,0.5) {\textbf{$\mathcal{L}_\text{SFT}$}\\Refusal behavior};
+  \node[lbox,fill=dangerred!8] (sat) at (-1.8,0.5) {\textbf{$\mathcal{L}_\text{SA-AT}$}\\Adversarial robust.};
+  \node[lbox,fill=accent!8] (con) at (1.8,0.5) {\textbf{$\mathcal{L}_\text{consist}$}\\Cross-layer agree.};
+  \node[lbox,fill=safegreen!8] (ent) at (5.5,0.5) {\textbf{$\mathcal{L}_\text{entangle}$}\\Subspace overlap};
+
+  \draw[arr] (sft) -- (total);
+  \draw[arr] (sat) -- (total);
+  \draw[arr] (con) -- (total);
+  \draw[arr] (ent) -- (total);
+
+  % Details below each
+  \node[font=\scriptsize,align=center,text=gray] at (-5.5,-0.5) {CE on response tokens\\Chat template formatted\\Label masking};
+  \node[font=\scriptsize,align=center,text=gray] at (-1.8,-0.5) {PGD in $V_s$ (32-dim)\\3 random restarts\\Relative $\varepsilon$};
+  \node[font=\scriptsize,align=center,text=gray] at (1.8,-0.5) {Cosine similarity\\across G=3 groups\\Harmful samples only};
+  \node[font=\scriptsize,align=center,text=gray] at (5.5,-0.5) {$1 - \eta(V_s, V_t)$\\Activation-mode\\Gradient to LoRA};
+
+  % Warmup note
+  \node[draw=orange,fill=orange!8,rounded corners,font=\scriptsize,align=center] at (0,-1.8) {
+    \textbf{Warmup}: Epoch 0 = pure SFT \quad$\to$\quad Epoch 1--4 = full multi-objective
+  };
+\end{tikzpicture}
+\end{frame}
+
+% ═══ Slide 10: Key Enhancements (Visual checklist) ═══
+\begin{frame}{10 Training Enhancements}
+\centering
+\begin{tikzpicture}[scale=0.75, transform shape,
+  item/.style={draw,rounded corners=3pt,minimum height=0.55cm,minimum width=5.5cm,
+               align=left,font=\scriptsize,fill=#1,inner sep=4pt}
+]
+  % Left column
+  \foreach \i/\text/\col in {
+    0/{Chat template formatting}/{safegreen!10},
+    1/{Label masking (response tokens only)}/{safegreen!10},
+    2/{LoRA: attention + MLP (7 modules)}/{safegreen!10},
+    3/{PGD random restarts ($3\times$)}/{accent!10},
+    4/{Relative $\varepsilon$ (5\% of $\|h\|$)}/{accent!10}
+  } {
+    \node[item=\col] at (-3.5, 3.5 - \i*0.85) {\textcolor{safegreen}{\checkmark}\;\text};
+  }
+  % Right column
+  \foreach \i/\text/\col in {
+    0/{SA-AT warmup (1 epoch pure SFT)}/{accent!10},
+    1/{$\mathcal{L}_\text{entangle}$: direct $\eta$ optimization}/{primary!10},
+    2/{$\mathcal{L}_\text{consist}$: harmful samples only}/{primary!10},
+    3/{Multi-layer hooks (all group layers)}/{orange!10},
+    4/{Intra-epoch subspace refresh (100 steps)}/{orange!10}
+  } {
+    \node[item=\col] at (3.5, 3.5 - \i*0.85) {\textcolor{safegreen}{\checkmark}\;\text};
+  }
+\end{tikzpicture}
+\end{frame}
+
+% ═══ Slide 11: Subspace Results (Actual data) ═══
+\begin{frame}{Progress: Subspace Identification (Qwen3-VL-8B)}
+\begin{columns}[c]
+\begin{column}{0.48\textwidth}
+\centering
 \begin{tikzpicture}[scale=0.7]
-  % Low eta
-  \begin{scope}[shift={(0,3)}]
-    \draw[primary,thick,->] (0,0) -- (2,0) node[right,font=\scriptsize] {$V_s$};
-    \draw[accent,thick,->] (0,0) -- (0,2) node[above,font=\scriptsize] {$V_t$};
-    \node[font=\scriptsize,below] at (1,-0.4) {$\eta \approx 0.2$ (vanilla)};
-    \node[font=\scriptsize,dangerred] at (1,1.2) {Orthogonal};
-    \node[font=\scriptsize,dangerred] at (1,0.7) {= Attackable};
-  \end{scope}
-  % High eta
-  \begin{scope}[shift={(4,3)}]
-    \draw[primary,thick,->] (0,0) -- (1.6,1.2) node[right,font=\scriptsize] {$V_s$};
-    \draw[accent,thick,->] (0,0) -- (1.2,1.6) node[above,font=\scriptsize] {$V_t$};
-    \node[font=\scriptsize,below] at (1,-0.4) {$\eta \approx 0.8$ (RDSA)};
-    \node[font=\scriptsize,safegreen] at (1,1.2) {Aligned};
-    \node[font=\scriptsize,safegreen] at (1,0.7) {= Robust};
-  \end{scope}
+\begin{axis}[
+  ybar, bar width=12pt,
+  ylabel={Singular Value (top-1)},
+  xlabel={Layer Group},
+  symbolic x coords={G1 (L10), G2 (L18), G3 (L26)},
+  xtick=data,
+  ymin=0, ymax=8000,
+  nodes near coords,
+  every node near coord/.append style={font=\scriptsize},
+  width=6.5cm, height=5cm,
+  title={\small\textbf{SVD Singular Values}},
+  title style={at={(0.5,1.05)}},
+]
+\addplot[fill=primary!60] coordinates {
+  (G1 (L10), 333) (G2 (L18), 1283) (G3 (L26), 7478)
+};
+\end{axis}
+\end{tikzpicture}
+\end{column}
+\begin{column}{0.48\textwidth}
+\centering
+\begin{tikzpicture}[scale=0.7]
+\begin{axis}[
+  ybar, bar width=12pt,
+  ylabel={$\eta$ (entanglement)},
+  xlabel={Layer Group},
+  symbolic x coords={G1 (L10), G2 (L18), G3 (L26)},
+  xtick=data,
+  ymin=0, ymax=1,
+  nodes near coords,
+  every node near coord/.append style={font=\scriptsize},
+  width=6.5cm, height=5cm,
+  title={\small\textbf{Vanilla Entanglement $\eta$}},
+  title style={at={(0.5,1.05)}},
+]
+\addplot[fill=dangerred!60] coordinates {
+  (G1 (L10), 0.487) (G2 (L18), 0.535) (G3 (L26), 0.491)
+};
+\end{axis}
 \end{tikzpicture}
 \end{column}
 \end{columns}
+\vspace{0.4em}
+\centering
+\small
+$V_s$: [4096, 32] \quad $V_t$: [4096, 256] \quad 3 groups $\times$ 5 layers each \quad 2000 contrast pairs
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 10: Training Pipeline
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{Training Pipeline: 10 Key Enhancements}
-\begin{columns}[T]
+% ═══ Slide 12: Training Curves (Actual data) ═══
+\begin{frame}{Progress: Training Curves (Epoch 0 --- Warmup)}
+\begin{columns}[c]
 \begin{column}{0.48\textwidth}
-\textbf{Data \& Format}
-\begin{itemize}
-  \item[\textcolor{safegreen}{\checkmark}] Chat template formatting
-  \item[\textcolor{safegreen}{\checkmark}] Label masking (response only)
-  \item[\textcolor{safegreen}{\checkmark}] LoRA: attention + MLP modules
-\end{itemize}
-\vspace{0.5em}
-\textbf{SA-AT Improvements}
-\begin{itemize}
-  \item[\textcolor{safegreen}{\checkmark}] PGD random restarts ($3\times$)
-  \item[\textcolor{safegreen}{\checkmark}] Relative $\varepsilon$ (5\% of $\|h\|$)
-  \item[\textcolor{safegreen}{\checkmark}] Warmup: 1 epoch pure SFT first
-\end{itemize}
+\centering
+\begin{tikzpicture}[scale=0.7]
+\begin{axis}[
+  xlabel={Step}, ylabel={Loss},
+  width=6.5cm, height=5cm,
+  legend pos=north east,
+  legend style={font=\tiny},
+  title={\small\textbf{Consistency Loss}},
+  title style={at={(0.5,1.05)}},
+  xmin=0, xmax=200, ymin=0, ymax=0.8,
+]
+\addplot[accent,thick,mark=none,smooth] coordinates {
+  (0,0.63) (10,0.74) (20,0.66) (30,0.65) (40,0.65) (50,0.00)
+  (60,0.68) (70,0.63) (80,0.65) (90,0.64) (100,0.53)
+  (110,0.52) (120,0.40) (130,0.20) (140,0.16) (150,0.08)
+  (160,0.05) (170,0.02) (180,0.01) (190,0.02) (200,0.01)
+};
+\addlegend{$\mathcal{L}_\text{consist}$}
+\end{axis}
+\end{tikzpicture}
 \end{column}
 \begin{column}{0.48\textwidth}
-\textbf{New Losses}
-\begin{itemize}
-  \item[\textcolor{safegreen}{\checkmark}] $\mathcal{L}_\text{entangle}$: optimize $\eta$ directly
-  \item[\textcolor{safegreen}{\checkmark}] $\mathcal{L}_\text{consist}$: harmful samples only
-\end{itemize}
-\vspace{0.5em}
-\textbf{Robustness}
-\begin{itemize}
-  \item[\textcolor{safegreen}{\checkmark}] Multi-layer hooks (all group layers)
-  \item[\textcolor{safegreen}{\checkmark}] Intra-epoch subspace refresh
-\end{itemize}
+\centering
+\begin{tikzpicture}[scale=0.7]
+\begin{axis}[
+  xlabel={Step}, ylabel={Loss},
+  width=6.5cm, height=5cm,
+  legend pos=north east,
+  legend style={font=\tiny},
+  title={\small\textbf{Entanglement Loss}},
+  title style={at={(0.5,1.05)}},
+  xmin=0, xmax=200, ymin=0.9, ymax=1.0,
+]
+\addplot[primary,thick,mark=none,smooth] coordinates {
+  (0,0.965) (10,0.958) (20,0.964) (30,0.956) (40,0.962)
+  (50,0.960) (60,0.961) (70,0.958) (80,0.958) (90,0.952)
+  (100,0.962) (110,0.957) (120,0.949) (130,0.941) (140,0.931)
+  (150,0.927) (160,0.926) (170,0.925) (180,0.922) (190,0.921) (200,0.920)
+};
+\addlegend{$\mathcal{L}_\text{entangle}$}
+\end{axis}
+\end{tikzpicture}
+\end{column}
+\end{columns}
+\vspace{0.3em}
+\centering
+\small
+\textcolor{safegreen}{\checkmark} Consistency converges: $0.63 \to 0.01$ (cross-layer agreement learned)\\
+\textcolor{orange}{$\circ$} Entanglement decreasing slowly: $0.96 \to 0.92$ (will accelerate with SA-AT in Epoch 1+)
+\end{frame}
+
+% ═══ Slide 13: Baseline Evaluation ═══
+\begin{frame}{Progress: Baseline Evaluation Results}
+\centering
+\begin{tikzpicture}[scale=0.75]
+\begin{axis}[
+  ybar, bar width=18pt,
+  ylabel={Rate (\%)},
+  symbolic x coords={No Attack, SCIA, FigStep},
+  xtick=data,
+  ymin=0, ymax=100,
+  legend pos=north east,
+  legend style={font=\small},
+  width=10cm, height=6cm,
+  title={\textbf{Vanilla Qwen3-VL-8B (no defense)}},
+  title style={at={(0.5,1.05)}},
+  nodes near coords,
+  every node near coord/.append style={font=\scriptsize},
+]
+\addplot[fill=dangerred!60] coordinates {(No Attack, 21.6) (SCIA, 21.6) (FigStep, 21.6)};
+\addplot[fill=safegreen!60] coordinates {(No Attack, 78.4) (SCIA, 78.4) (FigStep, 78.4)};
+\legend{ASR $\downarrow$, RR $\uparrow$}
+\end{axis}
+\end{tikzpicture}
+
+\vspace{0.2em}
+\small
+\textcolor{gray}{Note: Attack integration just completed --- SCIA/FigStep with adversarial images running next.}\\
+\textcolor{gray}{Expect SCIA ASR $>$60\% once adversarial perturbations are applied.}
+\end{frame}
+
+% ═══ Slide 14: Code Architecture ═══
+\begin{frame}{Codebase: $\sim$5000 Lines, Fully Modular}
+\centering
+\begin{tikzpicture}[scale=0.7, transform shape,
+  mod/.style={draw,rounded corners=3pt,minimum height=0.7cm,minimum width=2.8cm,align=center,font=\scriptsize},
+  pkg/.style={draw,rounded corners=5pt,minimum height=2.4cm,minimum width=3.2cm,align=center,font=\small\bfseries,fill=#1}
+]
+  % Packages
+  \node[pkg=primary!8] (sub) at (-5,2) {rdsa/subspace/};
+  \node[mod,fill=white,below=0.05cm of sub.north,anchor=north,yshift=-0.2cm] {identifier.py\\metrics.py};
+
+  \node[pkg=accent!8] (train) at (-1,2) {rdsa/training/};
+  \node[mod,fill=white,below=0.05cm of train.north,anchor=north,yshift=-0.2cm] {losses.py, trainer.py\\data.py};
+
+  \node[pkg=dangerred!8] (atk) at (3,2) {rdsa/attacks/};
+  \node[mod,fill=white,below=0.05cm of atk.north,anchor=north,yshift=-0.2cm] {scia.py, umk.py\\adaptive.py};
+
+  \node[pkg=safegreen!8] (eval) at (7,2) {rdsa/evaluation/};
+  \node[mod,fill=white,below=0.05cm of eval.north,anchor=north,yshift=-0.2cm] {judge.py, metrics.py\\benchmarks.py};
+
+  % Core
+  \node[pkg=orange!8,minimum height=1.2cm] (core) at (1,-0.8) {rdsa/models/};
+  \node[mod,fill=white] at (1,-0.8) {hooks.py\quad model\_utils.py};
+
+  % Scripts
+  \node[pkg=gray!10,minimum height=1.2cm] (scr) at (6,-0.8) {scripts/};
+  \node[mod,fill=white] at (6,-0.8) {exp1--10, collect\_results};
+
+  % Arrows
+  \draw[->,thick,gray] (sub) -- (train);
+  \draw[->,thick,gray] (train) -- (atk);
+  \draw[->,thick,gray] (atk) -- (eval);
+  \draw[->,thick,gray] (core) -- (sub);
+  \draw[->,thick,gray] (core) -- (train);
+
+  % Stats
+  \node[font=\scriptsize,gray,align=center] at (1,-2.2) {
+    3 VLMs supported \quad|\quad Hydra configs \quad|\quad wandb logging \quad|\quad pytest suite
+  };
+\end{tikzpicture}
+\end{frame}
+
+% ═══ Slide 15: Models & Evaluation Setup ═══
+\begin{frame}{Evaluation: 3 Models $\times$ 6 Attacks $\times$ 4 Benchmarks}
+\centering
+\small
+\begin{columns}[T]
+\begin{column}{0.3\textwidth}
+\textbf{Surrogate Models}\\(white-box, open-access)
+\vspace{0.3em}
+
+\begin{tikzpicture}[scale=0.6, transform shape,
+  mbox/.style={draw,rounded corners,minimum width=3.5cm,minimum height=0.65cm,
+               font=\scriptsize,fill=#1,align=center}]
+  \node[mbox=primary!10] at (0,2) {Qwen3-VL-8B (32L, 4096d)};
+  \node[mbox=accent!10] at (0,1) {InternVL2.5-8B (32L, 4096d)};
+  \node[mbox=safegreen!10] at (0,0) {MiniCPM-V-2.6 (28L, 3584d)};
+\end{tikzpicture}
+\end{column}
+\begin{column}{0.35\textwidth}
+\textbf{Attack Suite}
+\vspace{0.3em}
+
+\begin{tabular}{ll}
+\textcolor{dangerred}{\textbullet} & SCIA (neuron suppress.) \\
+\textcolor{dangerred}{\textbullet} & UMK (white-box PGD) \\
+\textcolor{orange}{\textbullet} & FigStep (typography) \\
+\textcolor{primary}{\textbullet} & Adaptive-SCIA \\
+\textcolor{primary}{\textbullet} & Adaptive-PGD \\
+\textcolor{primary}{\textbullet} & Monitor-Evasion \\
+\end{tabular}
+\end{column}
+\begin{column}{0.3\textwidth}
+\textbf{Metrics \& Benchmarks}
+\vspace{0.3em}
+
+\begin{tabular}{ll}
+\textbf{Safety:} & ASR$\downarrow$, RR$\uparrow$, OR$\downarrow$ \\
+\textbf{Judge:} & GPT-4o \\[0.3em]
+\textbf{Capab.:} & VQAv2 \\
+ & MMBench \\
+ & MME \\
+ & OR-Bench \\
+\end{tabular}
 \end{column}
 \end{columns}
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 11: Models & Evaluation
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{Models \& Evaluation Setup}
-\begin{columns}[T]
-\begin{column}{0.48\textwidth}
-\textbf{Surrogate Models (white-box)}
-\begin{itemize}
-  \item Qwen3-VL-8B \textcolor{safegreen}{$\checkmark$}
-  \item InternVL2.5-8B \textcolor{safegreen}{$\checkmark$}
-  \item MiniCPM-V-2.6 \textcolor{safegreen}{$\checkmark$}
-\end{itemize}
-\vspace{0.5em}
-\textbf{6 Attack Types}
-\begin{itemize}
-  \item SCIA, UMK (white-box)
-  \item FigStep (visual injection)
-  \item 3 adaptive attacks (knows RDSA)
-\end{itemize}
-\end{column}
-\begin{column}{0.48\textwidth}
-\textbf{Metrics}
-\begin{itemize}
-  \item ASR$\downarrow$ --- Attack Success Rate
-  \item RR$\uparrow$ --- Refusal Rate
-  \item OR$\downarrow$ --- Over-Refusal Rate
-  \item VQAv2, MMBench, MME (capability)
-\end{itemize}
-\vspace{0.5em}
-\textbf{Safety Judge}
-\begin{itemize}
-  \item GPT-4o as judge (OpenAI API)
-  \item 3 seeds for significance
-\end{itemize}
-\end{column}
-\end{columns}
-\end{frame}
-
-% ═══════════════════════════════════════════════════════════════
-% Slide 12: Preliminary Results
-% ═══════════════════════════════════════════════════════════════
-\begin{frame}{Preliminary Results: Qwen3-VL-8B}
-\begin{columns}[T]
-\begin{column}{0.48\textwidth}
-\textbf{Subspace Identification}
-\begin{itemize}
-  \item $V_s$: [4096, 32], $V_t$: [4096, 256]
-  \item Vanilla $\eta \approx 0.49$--$0.53$
-  \item 3 layer groups identified
-  \item Singular values: 333 $\rightarrow$ 7478 (deep layers)
-\end{itemize}
-\vspace{0.5em}
-\textbf{Baseline (no attack)}
-\begin{itemize}
-  \item Vanilla ASR $\approx$ \textbf{21.6\%}
-  \item Vanilla RR $\approx$ \textbf{78.4\%}
-\end{itemize}
-\end{column}
-\begin{column}{0.48\textwidth}
-\textbf{Training Status}
-\begin{itemize}
-  \item SA-AT warmup epoch: running
-  \item Consistency loss: $0.63 \rightarrow 0.02$
-  \item Entanglement loss: $0.96 \rightarrow 0.92$
-  \item SFT loss: converging
-\end{itemize}
-\vspace{0.5em}
-\textbf{Expected After Training}
-\begin{itemize}
-  \item ASR $< 10\%$ under SCIA
-  \item ASR $< 20\%$ under adaptive
-  \item VQA drop $< 2\%$
-\end{itemize}
-\end{column}
-\end{columns}
-\end{frame}
-
-% ═══════════════════════════════════════════════════════════════
-% Slide 13: Experiment Plan (10 Experiments)
-% ═══════════════════════════════════════════════════════════════
+% ═══ Slide 16: Experiment Plan ═══
 \begin{frame}{NeurIPS Experiment Plan: 10 Experiments}
 \small
-\begin{tabular}{clll}
+\begin{tabular}{clllc}
 \toprule
-\textbf{\#} & \textbf{Experiment} & \textbf{Output} & \textbf{Status} \\
+\textbf{\#} & \textbf{Experiment} & \textbf{Output} & \textbf{GPU-h} & \textbf{Status} \\
 \midrule
-1 & Main comparison (7 def $\times$ 6 atk $\times$ 3 models) & Table 1 & In progress \\
-2 & Ablation (6 variants) & Table 2 & Ready \\
-3 & SA-AT analysis (PGD, $\varepsilon$, restarts) & Fig 2--3 & Ready \\
-4 & Cross-layer redundancy (G=1,2,3) & Fig 4--5 & Ready \\
-5 & Entanglement ($\eta$ profile, $\eta$ vs ASR) & Fig 6 & Ready \\
-6 & Capability (VQAv2, MMBench, MME) & Table 4 & Ready \\
-7 & Adaptive attacks (strong budget) & Table 5 & Ready \\
-8 & Transfer attack (surrogate $\rightarrow$ victim) & Table 6 & Planned \\
-9 & Parameter sensitivity (7 params) & Fig 7 & Ready \\
-10 & Pareto frontier (safety vs utility) & Fig 1 & Planned \\
+1 & Main comparison (7 def $\times$ 6 atk $\times$ 3 models) & Table 1 & 120 & \textcolor{orange}{In progress} \\
+2 & Ablation (6 component variants) & Table 2 & 60 & \textcolor{safegreen}{Ready} \\
+3 & SA-AT analysis (PGD, $\varepsilon$, restarts) & Fig 2--3 & 40 & \textcolor{safegreen}{Ready} \\
+4 & Cross-layer redundancy (G=1,2,3) & Fig 4--5 & 20 & \textcolor{safegreen}{Ready} \\
+5 & Entanglement ($\eta$ profile, $\eta$ vs ASR) & Fig 6 & 15 & \textcolor{safegreen}{Ready} \\
+6 & Capability (VQAv2, MMBench, MME) & Table 4 & 30 & \textcolor{safegreen}{Ready} \\
+7 & Adaptive attacks (10$\times$ budget) & Table 5 & 40 & \textcolor{safegreen}{Ready} \\
+8 & Transfer (surrogate $\to$ victim + API) & Table 6 & 30 & \textcolor{gray}{Planned} \\
+9 & Parameter sensitivity (7 params) & Fig 7 & 240 & \textcolor{safegreen}{Ready} \\
+10 & Pareto frontier (safety vs utility) & Fig 1 & 0 & \textcolor{gray}{Planned} \\
+\midrule
+& \textbf{Total (1 seed / 3 seeds)} & & \textbf{595 / 1790} & \\
 \bottomrule
 \end{tabular}
-\vspace{0.5em}
-
-Total: $\sim$600 GPU-hours (1 seed) / $\sim$1800 GPU-hours (3 seeds)
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 14: Implementation Status
-% ═══════════════════════════════════════════════════════════════
+% ═══ Slide 17: Implementation Status ═══
 \begin{frame}{Implementation Status}
-\begin{columns}[T]
-\begin{column}{0.48\textwidth}
-\textbf{\textcolor{safegreen}{Completed}}
-\begin{itemize}
-  \item[\textcolor{safegreen}{\checkmark}] Subspace identification (SVD+PCA)
-  \item[\textcolor{safegreen}{\checkmark}] SA-AT training loop
-  \item[\textcolor{safegreen}{\checkmark}] 4 loss functions
-  \item[\textcolor{safegreen}{\checkmark}] 6 attack implementations
-  \item[\textcolor{safegreen}{\checkmark}] GPT-4o safety judge
-  \item[\textcolor{safegreen}{\checkmark}] 4 capability benchmarks
-  \item[\textcolor{safegreen}{\checkmark}] 10 experiment scripts
-  \item[\textcolor{safegreen}{\checkmark}] 3 open-access VLMs
-\end{itemize}
-\end{column}
-\begin{column}{0.48\textwidth}
-\textbf{\textcolor{accent}{In Progress}}
-\begin{itemize}
-  \item[$\circ$] Full RDSA training (5 epochs)
-  \item[$\circ$] Evaluation with real attacks
-  \item[$\circ$] Baseline defense reproduction
-\end{itemize}
-\vspace{0.5em}
-\textbf{\textcolor{primary}{Codebase}}
-\begin{itemize}
-  \item $\sim$5000 lines of Python
-  \item Hydra config management
-  \item wandb logging
-  \item Full test suite
-\end{itemize}
-\end{column}
-\end{columns}
+\centering
+\begin{tikzpicture}[scale=0.75, transform shape]
+  % Progress bar style
+  \foreach \i/\task/\pct/\col in {
+    0/{Subspace identification (SVD + PCA)}/100/safegreen,
+    1/{SA-AT training loop + 4 losses}/100/safegreen,
+    2/{6 attack implementations}/100/safegreen,
+    3/{GPT-4o safety judge + metrics}/100/safegreen,
+    4/{4 capability benchmarks}/100/safegreen,
+    5/{10 experiment scripts}/100/safegreen,
+    6/{3 open-access VLM configs}/100/safegreen,
+    7/{Attack integration in evaluate.py}/100/safegreen,
+    8/{Full RDSA training (5 epochs)}/20/orange,
+    9/{Evaluation with real attacks}/10/dangerred,
+    10/{Baseline defense reproduction}/0/dangerred
+  } {
+    \pgfmathsetmacro{\ypos}{3.5 - \i*0.65}
+    % Label
+    \node[font=\scriptsize,anchor=east] at (-0.2,\ypos) {\task};
+    % Background bar
+    \fill[lightbg] (0,\ypos-0.15) rectangle (6,\ypos+0.15);
+    % Progress bar
+    \pgfmathsetmacro{\barwidth}{\pct/100*6}
+    \fill[\col!40] (0,\ypos-0.15) rectangle (\barwidth,\ypos+0.15);
+    % Percentage
+    \node[font=\scriptsize\bfseries,\col] at (6.5,\ypos) {\pct\%};
+  }
+\end{tikzpicture}
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 15: Timeline to NeurIPS
-% ═══════════════════════════════════════════════════════════════
+% ═══ Slide 18: Timeline ═══
 \begin{frame}{Timeline to NeurIPS 2026}
+\centering
 \begin{tikzpicture}[scale=0.85, transform shape]
-  % Timeline
-  \draw[thick,->,>=stealth] (0,0) -- (13,0);
+  \draw[thick,->,>=Stealth] (0,0) -- (13.5,0);
 
-  % Weeks
-  \foreach \x/\label in {0.5/W1, 2.5/W2, 4.5/W3, 6.5/W4, 8.5/W5, 10.5/W6, 12.5/W7} {
+  \foreach \x/\label in {0.5/W1, 2.3/W2, 4.1/W3, 5.9/W4, 7.7/W5, 9.5/W6, 11.3/W7, 13/DL} {
     \draw (\x,-0.15) -- (\x,0.15);
     \node[below,font=\scriptsize] at (\x,-0.2) {\label};
   }
 
-  % Tasks
-  \node[draw,fill=primary!15,rounded corners,minimum height=0.6cm,font=\scriptsize,align=center] at (1.5,1.2) {Train 3 models\\Exp 1 + 6};
-  \node[draw,fill=primary!15,rounded corners,minimum height=0.6cm,font=\scriptsize,align=center] at (3.5,1.2) {Ablation\\Exp 2 + 7};
-  \node[draw,fill=accent!15,rounded corners,minimum height=0.6cm,font=\scriptsize,align=center] at (5.5,1.2) {Analysis\\Exp 3--5};
-  \node[draw,fill=accent!15,rounded corners,minimum height=0.6cm,font=\scriptsize,align=center] at (7.5,1.2) {Transfer\\Exp 8--9};
-  \node[draw,fill=safegreen!15,rounded corners,minimum height=0.6cm,font=\scriptsize,align=center] at (9.5,1.2) {Stats \&\\Exp 10};
-  \node[draw,fill=dangerred!15,rounded corners,minimum height=0.6cm,font=\scriptsize,align=center] at (11.5,1.2) {Write\\paper};
+  % Task blocks
+  \node[draw,fill=primary!15,rounded corners,minimum height=0.7cm,font=\scriptsize,align=center]
+    at (1.4,1.2) {Train 3 models\\+ Exp 1, 6};
+  \node[draw,fill=primary!15,rounded corners,minimum height=0.7cm,font=\scriptsize,align=center]
+    at (3.2,1.2) {Ablation\\Exp 2, 7};
+  \node[draw,fill=accent!15,rounded corners,minimum height=0.7cm,font=\scriptsize,align=center]
+    at (5.0,1.2) {Analysis\\Exp 3--5};
+  \node[draw,fill=accent!15,rounded corners,minimum height=0.7cm,font=\scriptsize,align=center]
+    at (6.8,1.2) {Transfer\\Exp 8--9};
+  \node[draw,fill=safegreen!15,rounded corners,minimum height=0.7cm,font=\scriptsize,align=center]
+    at (8.6,1.2) {Stats +\\Exp 10};
+  \node[draw,fill=orange!15,rounded corners,minimum height=0.7cm,font=\scriptsize,align=center]
+    at (10.4,1.2) {Write\\paper};
+  \node[draw,fill=dangerred!15,rounded corners,minimum height=0.7cm,font=\scriptsize,align=center]
+    at (12.1,1.2) {Polish\\submit};
 
-  % Deadline
-  \draw[dangerred,very thick,dashed] (12.5,0) -- (12.5,2);
-  \node[dangerred,font=\scriptsize\bfseries,above] at (12.5,2) {Deadline};
+  % Current marker
+  \draw[safegreen,very thick] (0.5,-0.3) -- (0.5,2.2);
+  \node[safegreen,font=\scriptsize\bfseries,above] at (0.5,2.2) {Now};
 
-  % Current
-  \draw[safegreen,very thick] (0.5,0) -- (0.5,1.8);
-  \node[safegreen,font=\scriptsize\bfseries,above] at (0.5,1.8) {Now};
+  % Deadline marker
+  \draw[dangerred,very thick,dashed] (13,-0.3) -- (13,2.2);
+  \node[dangerred,font=\scriptsize\bfseries,above] at (13,2.2) {Deadline};
+
+  % Risk box
+  \node[draw=orange,fill=orange!5,rounded corners,font=\scriptsize,align=center] at (6.7,-1.2) {
+    \textbf{Risks}: GPU availability \quad|\quad Baseline reproduction \quad|\quad Adaptive attack strength
+  };
 \end{tikzpicture}
-
-\vspace{0.8em}
-\textbf{Key risks}: GPU availability, baseline reproduction, adaptive attack strength
 \end{frame}
 
-% ═══════════════════════════════════════════════════════════════
-% Slide 16: Summary & Questions
-% ═══════════════════════════════════════════════════════════════
+% ═══ Slide 19: Summary ═══
 \begin{frame}{Summary}
+\begin{columns}[c]
+\begin{column}{0.55\textwidth}
 \begin{enumerate}
-  \item \textbf{Problem}: VLM safety is fragile due to localized features
-  \item \textbf{RDSA}: Three-module defense (SA-AT + Redundancy + Entanglement)
-  \item \textbf{Theory}: Provable coverage (Thm 1) + cost amplification (Thm 2)
-  \item \textbf{Status}: Full implementation complete, training in progress
-  \item \textbf{Target}: NeurIPS 2026 --- 10 experiments across 3 models
+  \item \textbf{Problem}: VLM safety fragile due to\\localized, separable features
+  \item \textbf{RDSA}: Distribute + Entangle + Harden\\(3 defense modules)
+  \item \textbf{Theory}: Provable coverage (Thm 1)\\+ cost amplification (Thm 2)
+  \item \textbf{Status}: Full implementation done,\\training in progress
+  \item \textbf{Target}: NeurIPS 2026\\10 experiments $\times$ 3 models
 \end{enumerate}
+\end{column}
+\begin{column}{0.4\textwidth}
+\centering
+\begin{tikzpicture}[scale=0.55, transform shape]
+  % Mini architecture recap
+  \node[draw,circle,fill=primary!15,minimum size=1.8cm,font=\scriptsize,align=center] (d) at (0,3) {Distribute\\G=3};
+  \node[draw,circle,fill=accent!15,minimum size=1.8cm,font=\scriptsize,align=center] (e) at (2.5,1) {Entangle\\$\eta\to 1$};
+  \node[draw,circle,fill=safegreen!15,minimum size=1.8cm,font=\scriptsize,align=center] (h) at (-2.5,1) {Harden\\SA-AT};
+  \draw[thick,primary] (d) -- (e);
+  \draw[thick,primary] (d) -- (h);
+  \draw[thick,primary] (e) -- (h);
+  \node[font=\small\bfseries,primary] at (0,1) {RDSA};
+\end{tikzpicture}
+
+\vspace{1em}
+{\small Code: \texttt{github.com/Skyyyy0920/RDSA}}
+\end{column}
+\end{columns}
 
 \vspace{1em}
 \centering
 {\Large\textcolor{primary}{\textbf{Questions?}}}
-
-\vspace{0.5em}
-{\small Code: \texttt{github.com/Skyyyy0920/RDSA}}
 \end{frame}
 
 \end{document}
