@@ -1,0 +1,112 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage[numbers]{natbib}
+\usepackage{titlesec}
+
+\titlespacing*{\section}{0pt}{1.2ex plus 0.3ex minus 0.2ex}{0.6ex plus 0.1ex}
+\titlespacing*{\subsection}{0pt}{0.8ex plus 0.2ex minus 0.1ex}{0.4ex plus 0.1ex}
+\setlength{\parskip}{0.3em}
+\setlength{\parindent}{0em}
+\setlist{nosep, leftmargin=1.5em}
+
+\title{\vspace{-2em}\textbf{RDSA: Resilient Distributed Safety Architecture} \\
+\large Protecting Privacy of Safety Representations in Vision-Language Models\vspace{-0.5em}}
+\author{
+  \textbf{[Name]} \\
+  University of Virginia \\
+  \texttt{[computing-id]@virginia.edu}
+}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\section{Motivation \& Use Case}
+
+Recent work on Safety-Critical Internal Attacks (SCIA) has revealed a fundamental privacy vulnerability in Vision-Language Models (VLMs): \textbf{safety-critical features are localized in approximately 0.1--0.5\% of neurons and are linearly separable from semantic features}. This means an adversary with white-box access (e.g., an open-weight model user) can efficiently \emph{identify} and \emph{extract} the precise internal representations responsible for safety alignment --- effectively a \textbf{privacy attack on the model's safety architecture}.
+
+This localization property has severe implications: once safety neurons are identified, attackers can craft adversarial perturbations that surgically suppress safety behavior while preserving task utility, achieving $>$90\% attack success rates. The root cause mirrors a classical privacy failure --- sensitive information (safety alignment) is \emph{concentrated} rather than \emph{distributed}, making it easy to locate and exploit.
+
+We propose \textbf{RDSA (Resilient Distributed Safety Architecture)}, a defense that addresses this vulnerability by making safety representations \emph{distributed}, \emph{entangled with semantics}, and \emph{redundantly encoded across layers} --- analogous to how differential privacy protects individual records by making them indistinguishable within aggregates.
+
+\section{System/Model Setting}
+
+\textbf{Models.} We train defenses on open-weight surrogate VLMs: Qwen3-VL-8B, InternVL2.5-8B, and MiniCPM-V-2.6. We evaluate transferability on larger models (Qwen3-VL-30B-A3B) and commercial APIs (GPT-4o, Gemini-2.5-Flash, Claude Sonnet 4.5).
+
+\textbf{Data.} Training uses paired safe/unsafe prompt--response data (BeaverTails, HarmBench) plus VQA data (LLaVA-Instruct, VQAv2) for capability preservation. All data is formatted with model-specific chat templates.
+
+\textbf{Deployment.} Parameter-efficient fine-tuning via LoRA (rank=16) enables training on a single A100-80GB GPU. Inference adds only an activation monitoring module with negligible overhead.
+
+\section{Threat Model \& Privacy Goals}
+
+\textbf{Adversary.} White-box access to model weights and architecture. The adversary can: (1) probe internal activations to identify safety-relevant neurons (probing attack), (2) compute SVD on activation differences to extract safety subspaces, and (3) craft targeted perturbations in the identified subspace.
+
+\textbf{Privacy goals.} We aim to make safety representations \emph{private} in the following sense:
+\begin{itemize}
+  \item \textbf{Non-localizability:} Safety features should be distributed across many neurons and layers, not concentrated in an identifiable subset.
+  \item \textbf{Non-separability:} Safety subspaces should be entangled with semantic subspaces, so that suppressing safety necessarily degrades task performance.
+  \item \textbf{Redundancy:} Safety should be encoded in multiple independent layer groups, so compromising one group does not defeat the entire defense.
+\end{itemize}
+
+\section{Baselines}
+
+We compare against: (1)~\textbf{Undefended models} (standard safety-aligned VLMs), (2)~\textbf{Standard adversarial training} (PGD-AT in full activation space), (3)~\textbf{Safety fine-tuning} (additional SFT on refusal data), (4)~\textbf{Representation engineering} (activation steering for safety), and (5)~\textbf{Circuit breakers} (Zou et al., 2024).
+
+Attack baselines include SCIA, UMK (white-box), FigStep, MM-SafetyBench (transfer-based), and three \emph{adaptive attacks} designed with full knowledge of RDSA.
+
+\section{Our Approach}
+
+RDSA has two complementary modules:
+
+\textbf{Module 1 --- Subspace-Constrained Adversarial Training (SA-AT).}
+We first identify each layer group's safety subspace $V_s \in \mathbb{R}^{d \times d_s}$ via SVD on activation differences between safe and unsafe inputs. Training then uses PGD to find the worst-case perturbation $\delta^*$ \emph{within} $V_s$:
+$\delta^* = \arg\max_{\|\delta\| \leq \varepsilon} \mathcal{L}_{\text{CE}}(f(h + V_s \delta),\; y_{\text{refusal}})$,
+and minimizes $\mathcal{L}_{\text{SA-AT}} = \mathcal{L}_{\text{CE}}(f(h + V_s \delta^*), y_{\text{refusal}})$. This hardens every safety-relevant direction within the $\varepsilon$-ball.
+
+\textbf{Module 2 --- Cross-Layer Safety Redundancy.}
+Safety is distributed across $G{=}3$ non-adjacent layer groups. A consistency loss enforces agreement on safety judgments across groups. An entanglement loss directly maximizes overlap $\eta$ between safety and semantic subspaces. Together, these raise the attack cost from $O(\varepsilon_1^*)$ to $O\!\left(\sqrt{\sum_k (\varepsilon_k^*)^2}\right)$.
+
+\textbf{Inference-time monitoring.} A lightweight activation integrity monitor detects anomalous cross-layer variance in safety confidence, providing a second line of defense.
+
+\section{Evaluation Plan}
+
+\textbf{Metrics.}
+\begin{itemize}
+  \item \textbf{Attack Success Rate (ASR):} fraction of harmful queries answered (lower is better), judged by GPT-4o.
+  \item \textbf{Refusal Rate (RR):} fraction of harmful queries correctly refused (higher is better).
+  \item \textbf{Over-Refusal Rate (OR):} refusal on benign queries (lower is better), measured on OR-Bench.
+  \item \textbf{Task Utility:} accuracy on VQAv2, MMBench, MME (should remain close to undefended baseline).
+  \item \textbf{Entanglement Degree ($\eta$):} quantifies safety--semantic subspace overlap (higher means harder to separate).
+\end{itemize}
+
+\textbf{Experiments.} (1)~Main comparison across all attacks and models, (2)~Ablation of each module, (3)~SA-AT analysis (PGD steps, $\varepsilon$), (4)~Redundancy analysis (number of groups $G$), (5)~Capability preservation, (6)~Adaptive attacks (adversary knows full defense), (7)~Parameter sensitivity.
+
+\section{Milestones \& Timeline}
+
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Week} & \textbf{Milestone} & \textbf{Deliverable} \\
+\midrule
+7--8 & Safety subspace identification pipeline & SVD + PCA working on Qwen3-VL-8B \\
+9--10 & SA-AT training loop complete & Training converges on 1 model \\
+11--12 & Full evaluation on 3 surrogate models & Main results table \\
+13--14 & Adaptive attacks \& ablation study & Ablation + adaptive attack results \\
+15--16 & Transferability \& final report & Poster + final write-up \\
+\bottomrule
+\end{tabular}
+
+\section{Risks \& Mitigations}
+
+\begin{itemize}
+  \item \textbf{Compute constraints:} LoRA fine-tuning + gradient checkpointing keeps memory within a single A100. Fallback: reduce to 2 surrogate models.
+  \item \textbf{Adaptive attacks break defense:} This is a genuine research risk. Mitigation: design multiple adaptive strategies (Adaptive-SCIA, Adaptive-PGD, Monitor-Evasion) and report results transparently.
+  \item \textbf{Capability degradation:} Entanglement may hurt task performance. Mitigation: Pareto analysis of safety--utility trade-off; harmful-only consistency loss to reduce over-refusal.
+  \item \textbf{Subspace identification instability:} SVD on small sample sizes may yield noisy subspaces. Mitigation: periodic re-identification during training; numerical stability via CPU-side SVD.
+\end{itemize}
+
+\end{document}

@@ -37,3 +37,20 @@ wandb/
 .DS_Store
 Thumbs.db
 *.log
+
+# Claude Code local settings (per-machine)
+.claude/
+
+# Overleaf working copies (separate remotes)
+poster/
+report/
+
+# LaTeX build artifacts
+*.aux
+*.out
+*.toc
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
